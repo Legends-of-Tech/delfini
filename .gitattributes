@@ -1,0 +1,7 @@
+# eol pins for content-hashed / byte-compared artifacts (P3.9.5).
+# prompt.md is copied into builds and content-hashed by ncc's asset pipeline
+# (the hash becomes the dist asset FILENAME) - a CRLF checkout on Windows
+# would hash differently than Linux CI and fail the dist-freshness gate.
+packages/drift-engine/src/prompt.md text eol=lf
+# The committed action bundle is byte-compared against a fresh Linux build.
+apps/action/dist/** text eol=lf
