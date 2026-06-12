@@ -13,6 +13,14 @@ packages/**/*.js.map
 scripts/**/*.js
 scripts/**/*.js.map
 
+# Exception: the GitHub Action's ncc bundle IS committed. A remote
+# `uses: Legends-of-Tech/delfini/apps/action@<tag>` reference fetches the repo
+# at the ref and runs action.yml's `main: dist/index.js` directly — no build
+# step runs for remote consumers, so the bundle must exist at the ref.
+# CI keeps it honest: the release-gate job rebuilds and diffs it (freshness).
+!apps/action/dist/
+!apps/action/dist/**
+
 .env
 .env.local
 *.tsbuildinfo

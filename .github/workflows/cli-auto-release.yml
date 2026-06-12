@@ -119,6 +119,13 @@ jobs:
       - name: Build Lite action bundle (ncc)
         run: pnpm --filter @delfini/action build
 
+      # The action's dist/ is COMMITTED (remote `uses:` consumers run it
+      # directly at the ref — no build step). This rebuild-and-diff keeps the
+      # committed bundle honest: a source change without a rebuilt dist fails
+      # here. Fix: pnpm --filter @delfini/action build && commit the dist.
+      - name: Committed action dist freshness check
+        run: git diff --exit-code -- apps/action/dist
+
       - name: prompt.md dist asset check (Lite)
         run: node scripts/check-dist-prompt-asset.mjs apps/action/dist
 

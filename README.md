@@ -35,7 +35,7 @@ The Action is consumed as a **monorepo-subdirectory reference**:
 
 ```yaml
 - name: Run Delfini
-  uses: Legends-of-Tech/delfini/apps/action@<tag>
+  uses: Legends-of-Tech/delfini/apps/action@v0
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     LLM_API_KEY: ${{ secrets.LLM_API_KEY }}

@@ -1,11 +1,18 @@
 name: Delfini Lite
 
-# Smoke-test workflow for the standalone (Lite) Delfini Action in this repo.
+# Dogfood + published-ref consumer test for the standalone (Lite) Delfini
+# Action, on pull requests carrying the `delfini-lite` label.
 #
-# Runs the Delfini Action — built from this repo's own `apps/action` source via
-# a local-path `uses:` — on pull requests carrying the `delfini-lite` label.
-# This lets the Lite pipeline be exercised against real PRs without cutting a
-# release tag first.
+# Story P3.9.5 cutover: this workflow consumes the Action exactly the way an
+# external repo does — `uses: Legends-of-Tech/delfini/apps/action@v0` (the
+# monorepo-subdirectory ref at the published moving tag). GitHub fetches the
+# repo at the tag and runs action.yml's `main: dist/index.js` directly, so the
+# ncc bundle is COMMITTED at the ref (see .gitignore's apps/action/dist
+# exception + the release-gate freshness check). No local build/setup steps —
+# their absence IS the consumer-path test.
+#
+# Tag convention: `v0` is the moving major tag for the 0.x line (re-pointed on
+# each release); `v1` arrives at 1.0.
 
 on:
   pull_request:
@@ -26,26 +33,8 @@ jobs:
     if: contains(github.event.pull_request.labels.*.name, 'delfini-lite')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build action bundle
-        run: pnpm --filter @delfini/action build
-
-      - name: Run Delfini (Lite mode)
-        uses: ./apps/action
+      - name: Run Delfini (Lite mode) — published subdirectory ref
+        uses: Legends-of-Tech/delfini/apps/action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
