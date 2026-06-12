@@ -1,0 +1,41 @@
+{
+  "name": "@delfini/action-core",
+  "version": "0.1.1",
+  "private": false,
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "description": "Shared analysis-pipeline core of the Delfini GitHub Action (doc reader, smart-skip, analysis-input assembly, single-call orchestrator adapters, shared GitHub client, pipeline input reader). Internal shared core published for transparency and delfini-web consumption — no semver API-stability promise in V1.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -b && node scripts/copy-prompt.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "@actions/github": "^6.0.0",
+    "@delfini/drift-engine": "workspace:*",
+    "@langchain/anthropic": "^1.3.29",
+    "@langchain/core": "^1.1.45",
+    "@langchain/openai": "^1.4.5",
+    "gray-matter": "^4.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
+  }
+}

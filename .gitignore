@@ -1,0 +1,23 @@
+node_modules/
+.pnpm-store/
+dist/
+.cache/
+
+# Never commit transpiled .js/.js.map shadows next to TypeScript sources.
+# Workspace packages are TypeScript-only; real emit targets live under dist/ (ignored above).
+# Root-level .js files (e.g. eslint.config.js) are unaffected by these rules.
+apps/**/*.js
+apps/**/*.js.map
+packages/**/*.js
+packages/**/*.js.map
+scripts/**/*.js
+scripts/**/*.js.map
+
+.env
+.env.local
+*.tsbuildinfo
+*.tgz
+.claude/settings.local.json
+
+# Per-run Delfini Skill trace artefacts (FR148) — rebuilt every run, never committed.
+.delfini-trace/

@@ -1,0 +1,7 @@
+{
+  "groundTruthDocPath": "docs/utils-guide.md",
+  "groundTruthSection": {
+    "startLineIndex": 6,
+    "headingText": "## Format Helpers"
+  }
+}

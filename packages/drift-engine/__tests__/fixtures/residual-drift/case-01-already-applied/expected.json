@@ -1,0 +1,9 @@
+{
+  "residualDocPaths": ["docs/unfixed.md"],
+  "alreadyAppliedDocPaths": ["docs/aligned.md"],
+  "groundTruthDocPath": "docs/unfixed.md",
+  "groundTruthSection": {
+    "startLineIndex": 2,
+    "headingText": "## Defaults"
+  }
+}

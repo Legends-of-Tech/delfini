@@ -1,0 +1,54 @@
+name: Changeset Check
+
+# Fails a PR that changes the npm-tracked packages without a changeset.
+# Scope: THREE published packages — @delfini/cli, @delfini/drift-engine, and
+# @delfini/action-core.
+#   - @delfini/drift-engine publishes in its own right AND is bundled into
+#     @delfini/cli via tsup noExternal — a drift-engine change (including
+#     runtime-dep bumps in its package.json, not just src/) ships in both.
+#   - @delfini/action-core is the shared Action analysis-pipeline core,
+#     published for the Delfini platform's exact-pin consumption.
+# Path filters are intentionally symmetric (whole tree per package) so a
+# runtime-dep bump in any of the three package.json files fires the gate.
+# Non-shipping changes (test-only, CHANGELOG) can be satisfied with
+# `pnpm changeset --empty`. All other workspace packages are in
+# `.changeset/config.json` `ignore`.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'packages/cli/**'
+      - 'packages/drift-engine/**'
+      - 'packages/action-core/**'
+
+permissions:
+  contents: read
+
+jobs:
+  changeset-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so `changeset status --since` can diff against the base branch.
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify a changeset is present
+        # Exits non-zero with "Some packages have been changed but no changesets were
+        # found" when a tracked package changed on this branch without a new changeset.
+        # Authors satisfy it with `pnpm changeset` (or `pnpm changeset --empty` for a
+        # change that genuinely needs no release).
+        run: pnpm exec changeset status --since=origin/${{ github.base_ref }}

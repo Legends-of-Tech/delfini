@@ -1,0 +1,23 @@
+{
+  "diff": "diff --git a/src/config.ts b/src/config.ts\nindex 1111111..2222222 100644\n--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n export const config = {\n-  sessionTimeoutSeconds: 30,\n+  sessionTimeoutSeconds: 60,\n }\ndiff --git a/docs/aligned.md b/docs/aligned.md\nindex 3333333..4444444 100644\n--- a/docs/aligned.md\n+++ b/docs/aligned.md\n@@ -1,4 +1,4 @@\n # Session Handling\n \n ## Timeout\n-The session timeout is 30 seconds.\n+The session timeout is 60 seconds.\n",
+  "docs": [
+    {
+      "path": "docs/aligned.md",
+      "content": "# Session Handling\n\n## Timeout\nThe session timeout is 60 seconds.",
+      "frontMatterLineCount": 0
+    },
+    {
+      "path": "docs/unfixed.md",
+      "content": "# Session Reference\n\n## Defaults\nThe session timeout is 30 seconds.",
+      "frontMatterLineCount": 0
+    }
+  ],
+  "prMetadata": {
+    "owner": "delfini-fixtures",
+    "repo": "residual-drift",
+    "prNumber": 7,
+    "headSha": "0000000000000000000000000000000000000001",
+    "baseSha": "0000000000000000000000000000000000000002",
+    "title": "Raise session timeout to 60s"
+  }
+}

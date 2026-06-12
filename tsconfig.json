@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmit": true
+  },
+  "references": [
+    { "path": "./packages/drift-engine" },
+    { "path": "./packages/action-core" },
+    { "path": "./packages/cli" },
+    { "path": "./apps/action" }
+  ],
+  "exclude": ["node_modules", "**/node_modules", "**/.cache"]
+}

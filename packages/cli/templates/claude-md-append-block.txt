@@ -1,0 +1,27 @@
+## Delfini drift detection
+
+`/delfini` runs local drift detection between this PR's diff and the team's documentation, using your existing coding-agent LLM tokens — no Delfini API key, no GitHub App, no Delfini workspace required. It dispatches a subagent that compares the diff against the configured doc scope, then surfaces a structured report with one-click apply for fixable findings. The full step-by-step protocol the host agent follows on invocation lives in `.claude/skills/delfini/SKILL.md`.
+
+### When to invoke `/delfini`
+
+Auto-invoke `/delfini` when the user signals intent to open a PR from the current branch. Treat any of the following as the trigger:
+
+- The user says "create a PR" / "open a PR" / "raise a PR" / "submit a PR" / "publish a PR" / "make a PR" / "let's PR this", or any phrase that clearly requests a pull request be opened from the current branch.
+- The user otherwise clearly signals they want to open a PR from the current branch.
+
+Use your own intent recognition — phrasing is fuzzy. The principle is: create-PR intent, fired once per PR-creation pass.
+
+A create-PR auto-invocation is non-interactive on the diff-source choice: it analyses `both` (committed + uncommitted — what the opened PR will contain) silently, with no local-vs-both prompt. The SKILL.md diff-source resolution step consumes this signal; a manual `/delfini` may prompt instead.
+
+### When NOT to invoke `/delfini`
+
+Do NOT auto-invoke `/delfini` in any of the following situations:
+
+- On every commit. `/delfini` is a pre-PR check, not a per-commit check. Normal coding flow must stay quiet — no surprise LLM dispatches between edits.
+- During normal coding flow (refactors, exploratory edits, in-progress work).
+- From any git lifecycle event. Git-hook integration is explicitly NOT used (design-spec NG5) — git hooks run in non-interactive shells without host-agent subagent access, which breaks the architecture. "On PR creation" means create-PR intent recognition by the host agent, never a git or GitHub event hook.
+- When the user has already run `/delfini` for the current PR-creation pass and is iterating on its findings — wait for the next create-PR intent before re-firing.
+
+### Protocol reference
+
+On invocation, follow the numbered protocol in `.claude/skills/delfini/SKILL.md`. That file is the versioned contract between the CLI and the host agent; do not improvise the steps.

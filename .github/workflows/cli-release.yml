@@ -1,0 +1,94 @@
+name: CLI Release (manual fallback)
+
+# Manual-fallback npm publish for the Legends-of-Tech/delfini OSS monorepo's
+# published packages (@delfini/cli, @delfini/drift-engine, @delfini/action-core).
+# Triggered MANUALLY via `gh workflow run cli-release.yml [--ref <branch>]` or the
+# Actions tab. The on-merge auto-release wrapper around the same `pnpm release`
+# command lives in cli-auto-release.yml (`changesets/action@v1` on push to main).
+#
+# Why workflow_dispatch and NOT `release: published`:
+#   This workflow is the manual escape hatch: it stays as a "I lost my
+#   auto-release" or "publish under direct human supervision" fallback that
+#   survives alongside the auto-release workflow.
+#
+# Provenance (ENABLED — public repo):
+#   npm provenance requires a PUBLIC source GitHub repo — sigstore publicly
+#   attests the build. Legends-of-Tech/delfini is public, so provenance is
+#   enabled here via the two supported toggles:
+#     (1) `permissions: id-token: write` — GitHub mints the OIDC token sigstore needs;
+#     (2) `NPM_CONFIG_PROVENANCE: 'true'` in the publish step env — npm reads it
+#         as a config env var.
+#   Do NOT add a `--provenance` flag anywhere: `changeset publish` does not
+#   accept it (it only ships --tag / --otp / --no-git-tag). `--access public`
+#   comes from .changeset/config.json `access: "public"` + each package's
+#   `publishConfig.access` — not a CLI flag.
+#
+# DELFINI_PUBLISH_OK guard:
+#   packages/cli/package.json `scripts.prepublishOnly` blocks accidental direct
+#   `npm publish` invocations unless `DELFINI_PUBLISH_OK=1` is set. The
+#   changesets-driven publish path (this workflow + the local `pnpm release`
+#   recipe in .changeset/README.md) is the legitimate bypass.
+#
+# Authentication:
+#   `actions/setup-node` `registry-url:` writes ~/.npmrc with
+#   `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`. The publish step
+#   provides NODE_AUTH_TOKEN from the `NPM_TOKEN` repo secret. Without
+#   `registry-url:` the runner runs unauthenticated and the publish fails
+#   `ENEEDAUTH` — this is the most common GitHub Actions npm-publish footgun.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Provenance (public repo): GitHub mints the OIDC token sigstore needs.
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so changesets can read git tags / prior versions when
+          # producing the publish plan.
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+          # Load-bearing: writes ~/.npmrc with the auth token mapping so
+          # `pnpm release` → `npm publish` is authenticated.
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build drift-engine (must precede CLI build — DTS dep)
+        run: pnpm --filter @delfini/drift-engine build
+
+      # action-core after drift-engine, before the CLI: the
+      # @delfini/action-core publish tarball packs its gitignored dist/.
+      - name: Build action-core (publish tarball packs its dist/)
+        run: pnpm --filter @delfini/action-core build
+
+      - name: Build @delfini/cli (tsup bundle, drift-engine inlined)
+        run: pnpm --filter @delfini/cli build
+
+      - name: Publish via changesets
+        # `pnpm release` is `changeset publish`. It picks up the version bumped
+        # by an earlier `changeset version` commit and respects `access: public`
+        # from .changeset/config.json + each package's `publishConfig.access`.
+        run: pnpm release
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DELFINI_PUBLISH_OK: '1'
+          # Provenance (public repo): npm config via env — never a --provenance flag.
+          NPM_CONFIG_PROVENANCE: 'true'

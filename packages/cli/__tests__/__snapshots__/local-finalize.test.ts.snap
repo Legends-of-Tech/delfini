@@ -1,0 +1,44 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`runLocalFinalize — determinism (AC9, NFR46) > snapshot — pinned shape for a mixed-finding fixture 1`] = `
+"# Delfini drift analysis
+
+1 drift, 1 additive, 1 clarification finding(s).
+
+## Apply-eligible findings
+
+### [1] [H] drift: docs/arch.md:3-3
+
+**Section:** Storage
+**Severity:** High  **Confidence:** 5/5
+
+**What changed:** Switched from Postgres to MySQL
+**What contradicts:** Doc claims Postgres
+
+**Proposed change:**
+\`\`\`diff
+- We use Postgres for storage.
++ We use MySQL for storage.
+\`\`\`
+
+### [2] [M] additive: docs/arch.md — insert before line 1
+
+**Anchor section:** Architecture
+**Severity:** Medium  **Confidence:** 4/5
+
+**What changed:** Added Kafka
+**Rationale:** New foundational tech
+
+**Proposed addition (insert before line 1):**
+\`\`\`diff
++ We now use Kafka for messaging.
+\`\`\`
+
+## Manual review required
+
+### Clarification: docs/arch.md — Authentication
+
+**What changed:** Added a new auth flow
+**Question:** Where should this live?
+"
+`;

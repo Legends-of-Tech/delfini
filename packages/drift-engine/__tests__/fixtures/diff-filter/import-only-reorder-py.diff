@@ -1,0 +1,9 @@
+diff --git a/src/x.py b/src/x.py
+index 111..222 100644
+--- a/src/x.py
++++ b/src/x.py
+@@ -1,3 +1,3 @@
+-from foo import a
+-from bar import b
++from bar import b
++from foo import a

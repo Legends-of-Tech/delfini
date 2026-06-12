@@ -1,0 +1,66 @@
+name: 'Delfini'
+description: >
+  Standalone doc-drift detection for pull requests. Checks whether a PR's code
+  changes contradict the project's source-of-truth documentation and posts a
+  rich structured-findings comment directly on the PR — no hosted platform, no
+  external service beyond your own LLM provider key.
+
+# This is the standalone (Lite) Delfini action. It analyses the PR locally and
+# posts one rich Delfini PR comment plus a GitHub check; doc scope comes from
+# the `doc_scope` input (default "docs/", applied in code).
+#
+# Pairing with the hosted Delfini platform (workspace-managed doc scope,
+# hosted review surface, Approve-and-Commit) is a separate distribution that
+# ships with the Delfini platform — see the Delfini platform documentation.
+# This action hard-fails if a Delfini workspace token is supplied, rather than
+# silently running standalone.
+#
+# Excluding individual documents (applied on top of the scope):
+#   YAML front-matter inside a .md file: "delfini: ignore" (shorthand) or
+#   "delfini: { ignore: true, reason: '...' }" (with a reason field). The
+#   in-doc front-matter form keeps exclusion visible in the doc's own diff so
+#   it can't be hidden in a side-channel.
+# See apps/action/README.md for examples and semantics.
+
+inputs:
+  # NB: no `default:` here on purpose. The effective "docs/" default is applied
+  # in code — readPipelineInputs() (from @delfini/action-core) splits the input
+  # on newlines/commas, normalises via @delfini/drift-engine
+  # `normalizeDocScope`, and falls back to ["docs/"] when the input is omitted
+  # or collapses to empty (Story P2.6). Keeping the default code-side keeps the
+  # observable behaviour byte-identical across every consumption path.
+  doc_scope:
+    description: >
+      Paths to the source-of-truth markdown files Delfini analyses. Accepts a
+      newline- or comma-delimited list of entries; each entry may be a
+      directory (recursive .md scan), a single file, or a glob (picomatch@4
+      dialect — e.g. "docs/**/*.md", "packages/*/README.md"). A single bare
+      path still works ("docs"). Defaults to "docs/" when omitted.
+    required: false
+  enforcement:
+    description: >
+      "required" blocks merge on FAIL; "warning" is advisory only.
+    required: false
+    default: 'warning'
+  enable_diff_prefilter:
+    description: >
+      Story P3.7.2 / FR151 — opt-in deterministic diff pre-filter. Set to
+      "true" to drop lockfile/generated/vendored/fixture paths plus pure
+      whitespace-only and import-only hunks from the analysed diff BEFORE
+      prompt assembly. Default "false" — the assembled analysis input is
+      byte-identical to the no-flag baseline.
+    required: false
+    default: 'false'
+
+# Environment variables (set via GitHub Actions secrets / env):
+#
+#   LLM_API_KEY        — Required. API key for the LLM provider.
+#   LLM_PROVIDER       — Optional (default: "anthropic"). One of: anthropic, openai.
+#   LLM_MODEL          — Optional. Overrides the provider's default model.
+#   LANGSMITH_API_KEY   — Optional. When present alongside LANGSMITH_TRACING=true,
+#                         enables per-run LangSmith tracing for debuggability.
+#   LANGSMITH_TRACING   — Optional (default: "false"). Set to "true" to emit traces.
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

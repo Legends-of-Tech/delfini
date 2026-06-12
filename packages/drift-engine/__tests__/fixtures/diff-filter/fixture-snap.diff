@@ -1,0 +1,14 @@
+diff --git a/src/__tests__/__snapshots__/foo.test.ts.snap b/src/__tests__/__snapshots__/foo.test.ts.snap
+index 111..222 100644
+--- a/src/__tests__/__snapshots__/foo.test.ts.snap
++++ b/src/__tests__/__snapshots__/foo.test.ts.snap
+@@ -1,2 +1,2 @@
+-exports[`foo`] = `old`
++exports[`foo`] = `new`
+diff --git a/src/__fixtures__/data.json b/src/__fixtures__/data.json
+index aaa..bbb 100644
+--- a/src/__fixtures__/data.json
++++ b/src/__fixtures__/data.json
+@@ -1 +1 @@
+-{"v": 1}
++{"v": 2}

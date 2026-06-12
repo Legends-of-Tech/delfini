@@ -1,0 +1,14 @@
+diff --git a/third_party/lib/a.go b/third_party/lib/a.go
+index aaa..bbb 100644
+--- a/third_party/lib/a.go
++++ b/third_party/lib/a.go
+@@ -1 +1 @@
+-package lib
++package lib2
+diff --git a/vendor/x/y.rs b/vendor/x/y.rs
+index ccc..ddd 100644
+--- a/vendor/x/y.rs
++++ b/vendor/x/y.rs
+@@ -1 +1 @@
+-fn old() {}
++fn new() {}

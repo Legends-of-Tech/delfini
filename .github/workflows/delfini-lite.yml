@@ -1,0 +1,59 @@
+name: Delfini Lite
+
+# Smoke-test workflow for the standalone (Lite) Delfini Action in this repo.
+#
+# Runs the Delfini Action — built from this repo's own `apps/action` source via
+# a local-path `uses:` — on pull requests carrying the `delfini-lite` label.
+# This lets the Lite pipeline be exercised against real PRs without cutting a
+# release tag first.
+
+on:
+  pull_request:
+    # `labeled` is required: a PR created with `--label` still fires `opened`
+    # before the label is attached, so the run that actually carries the label
+    # is the `labeled` event. `synchronize` covers pushes to a labelled PR.
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+  statuses: write
+
+jobs:
+  delfini-lite-action:
+    # Runs only on PRs carrying the `delfini-lite` label.
+    if: contains(github.event.pull_request.labels.*.name, 'delfini-lite')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build action bundle
+        run: pnpm --filter @delfini/action build
+
+      - name: Run Delfini (Lite mode)
+        uses: ./apps/action
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_PROVIDER: anthropic
+          LLM_MODEL: claude-opus-4-7
+          # The action is standalone by design: it hard-fails if a Delfini
+          # workspace token is supplied (see apps/action/action.yml).
+        with:
+          # Smoke-doc scope: point at the repo docs the smoke PR perturbs.
+          doc_scope: docs
+          enforcement: warning

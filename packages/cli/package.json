@@ -1,0 +1,45 @@
+{
+  "name": "@delfini/cli",
+  "version": "0.1.2",
+  "license": "Apache-2.0",
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Delfini Skill CLI — deterministic, never calls an LLM. Subcommands: install, local-prepare, local-finalize, --reset-scope, --version. (P3.2.5 + P3.2.6 ship the doc-scope + trace primitives; subcommand wiring follows in P3.2.1 / P3.2.2 / P3.2.3 / P3.2.4.)",
+  "bin": {
+    "delfini": "./bin/delfini.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "bin",
+    "templates",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vitest run",
+    "prepublishOnly": "node scripts/prepublish-guard.mjs"
+  },
+  "dependencies": {
+    "@delfini/drift-engine": "workspace:*",
+    "commander": "^12.1.0",
+    "simple-git": "^3.27.0",
+    "tinyglobby": "^0.2.16",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
+  }
+}

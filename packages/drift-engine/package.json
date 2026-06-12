@@ -1,0 +1,43 @@
+{
+  "name": "@delfini/drift-engine",
+  "version": "0.2.0",
+  "private": false,
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "description": "Pure-logic drift analysis core shared by @delfini/action and @delfini/cli. No I/O, no LLM client, no credentials, no fetch. Runtime deps: zod + picomatch (both pure CPU). Public API: buildPrompt, validateAndReconcile, estimatePromptTokens, analysisSchema, and the doc-scope algebra (normalizeDocScope, validateDocScopeEntry, classifyEntry, isFileInDocScope).",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./doc-scope": {
+      "types": "./dist/doc-scope-entry.d.ts",
+      "import": "./dist/doc-scope-entry.js"
+    },
+    "./prompt.md": "./src/prompt.md"
+  },
+  "files": [
+    "dist",
+    "src/prompt.md",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "picomatch": "^4.0.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/picomatch": "^4.0.0",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
+  }
+}

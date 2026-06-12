@@ -1,0 +1,188 @@
+name: CLI Auto-Release
+
+# On-merge auto-release pipeline for the Legends-of-Tech/delfini OSS monorepo's
+# published packages (@delfini/cli, @delfini/drift-engine, @delfini/action-core).
+#
+# What this does:
+#   On every push to `main`, `changesets/action@v1` either (a) opens/updates a
+#   "Version Packages" PR that runs `pnpm version-packages` (= `changeset version`)
+#   to consume pending changesets + bump the package.json(s) + write the
+#   CHANGELOG, or (b) when there are no pending changesets but an unpublished
+#   version exists, runs `pnpm release` (= `changeset publish`) to publish the
+#   tracked packages to npm. This is the AUTOMATION layer around the EXACT SAME
+#   `pnpm release` command the manual fallback (cli-release.yml) runs — only the
+#   trigger (push:main vs workflow_dispatch) and credential plumbing differ.
+#   Do NOT invent a different publish invocation.
+#
+# Provenance (ENABLED — public repo):
+#   npm provenance requires a PUBLIC source GitHub repo — sigstore publicly
+#   attests the build. Legends-of-Tech/delfini is public, so provenance is
+#   enabled via the two supported toggles:
+#     (1) `permissions: id-token: write` — GitHub mints the OIDC token sigstore needs;
+#     (2) `NPM_CONFIG_PROVENANCE: 'true'` in the changesets/action step env.
+#   Do NOT add a `--provenance` flag anywhere: `changeset publish` does not
+#   accept it (only --tag / --otp / --no-git-tag). `--access public` comes from
+#   .changeset/config.json `access: "public"` + each package's
+#   `publishConfig.access` — not a CLI flag.
+#
+# Release state: the repo is out of changesets pre-release mode (no
+# .changeset/pre.json — stable GA versions only). On a Version-PR merge the
+# consumed .changeset/*.md files are deleted, hasChangesets flips false, and
+# this workflow auto-publishes with no manual step.
+#
+# DELFINI_PUBLISH_OK guard + auth footgun (carried from cli-release.yml):
+#   - packages/cli/package.json `prepublishOnly` blocks stray `npm publish`
+#     unless DELFINI_PUBLISH_OK=1 (the changesets-driven path is the legit bypass).
+#   - actions/setup-node `registry-url:` writes ~/.npmrc with the NODE_AUTH_TOKEN
+#     mapping; without it `pnpm release` runs unauthenticated → ENEEDAUTH.
+#
+# Coexists with .github/workflows/cli-release.yml (workflow_dispatch manual
+# fallback). Two workflows, identical publish command, different triggers.
+
+on:
+  push:
+    branches: [main]
+
+# Avoid overlapping release runs racing on the Version PR / publish.
+concurrency:
+  group: cli-auto-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write # changesets/action pushes the Version Packages branch + commits
+  pull-requests: write # ...and opens/updates the Version Packages PR
+  # Provenance (public repo): GitHub mints the OIDC token sigstore needs.
+  id-token: write
+
+jobs:
+  # The NFR44 release gates. The `release` job `needs:` this job, so a red
+  # gate blocks the ENTIRE release job (both the Version-PR open AND the publish) —
+  # a parity regression must not even open a Version PR, let alone publish.
+  nfr44-gates:
+    name: NFR44 release gates (A snapshot / B-lite action + action-core / C bundled-CLI)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # drift-engine must build before the CLI build — the CLI tsup DTS step
+      # imports drift-engine's gitignored dist/. Gate C reads the bundled dist/.
+      - name: Build drift-engine (DTS dep for the CLI build)
+        run: pnpm --filter @delfini/drift-engine build
+
+      # action-core builds AFTER drift-engine (workspace dep) and BEFORE the
+      # CLI build/tests: its consumers (the Lite action suites below, and the
+      # publish tarball) resolve its gitignored dist/ via the package exports.
+      - name: Build action-core (consumers resolve its dist/)
+        run: pnpm --filter @delfini/action-core build
+
+      - name: Build @delfini/cli (tsup bundle, drift-engine inlined)
+        run: pnpm --filter @delfini/cli build
+
+      - name: Gate A — drift-engine snapshot parity
+        run: pnpm --filter @delfini/drift-engine test
+
+      # Gate B-lite — the public gate-B spec for this repo: the Lite action
+      # suites + the action-core suites (shared pipeline tests, dialect-parity
+      # test, pack-install smoke). The Full-pipeline gate lives with the Full
+      # action in the closed Delfini platform repo.
+      - name: Gate B-lite — Lite action suites
+        run: pnpm --filter @delfini/action test
+
+      - name: Gate B-lite — action-core suites (incl. pack-install smoke)
+        run: pnpm --filter @delfini/action-core test
+
+      - name: Gate C — bundled-CLI parity
+        run: pnpm --filter @delfini/cli test
+
+      # The two public artifacts beyond the npm packages are gated here too:
+      #   1. the Lite action bundle must carry the prompt.md asset;
+      #   2. the Lite dist must be free of Full-only runtime markers
+      #      (comment-stripped scan; workspace-token guard strings allowlisted);
+      #   3. the @delfini/action-core tarball (packed JS + .d.ts) must be free
+      #      of the same markers and of platform-contract fields in the
+      #      hoisted pipeline-inputs declarations.
+      - name: Build Lite action bundle (ncc)
+        run: pnpm --filter @delfini/action build
+
+      - name: prompt.md dist asset check (Lite)
+        run: node scripts/check-dist-prompt-asset.mjs apps/action/dist
+
+      - name: Lite-dist bundle scan (Full-only runtime markers)
+        run: node scripts/scan-lite-dist.mjs
+
+      - name: action-core tarball scan
+        run: node scripts/scan-action-core-tarball.mjs
+
+  release:
+    name: Version PR / publish (gated by NFR44)
+    needs: [nfr44-gates]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+          # Load-bearing: writes ~/.npmrc with the auth-token mapping so
+          # `pnpm release` → `npm publish` is authenticated (else ENEEDAUTH).
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The `release` script stays thin (just `changeset publish`); the build is
+      # the workflow's responsibility. drift-engine first.
+      - name: Build drift-engine (must precede CLI build — DTS dep)
+        run: pnpm --filter @delfini/drift-engine build
+
+      # action-core after drift-engine, before the CLI: the
+      # @delfini/action-core publish tarball packs its gitignored dist/.
+      - name: Build action-core (publish tarball packs its dist/)
+        run: pnpm --filter @delfini/action-core build
+
+      - name: Build @delfini/cli (tsup bundle, drift-engine inlined)
+        run: pnpm --filter @delfini/cli build
+
+      - name: Create Version PR or publish to npm
+        uses: changesets/action@v1
+        with:
+          # Version step: consume pending changesets, bump the packages, write CHANGELOG.
+          version: pnpm version-packages
+          # Publish step: BYTE-IDENTICAL to the manual fallback's `pnpm release`
+          # (= changeset publish). No --provenance, no --access flag
+          # (provenance via NPM_CONFIG_PROVENANCE env; access via config + publishConfig).
+          publish: pnpm release
+          title: 'Version Packages (@delfini/cli)'
+          commit: 'chore(release): version @delfini/cli'
+        env:
+          # changelog-github (the version step) + changesets/action PR creation.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # npm auth for the publish step (the repo's NPM_TOKEN secret).
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Bypass the packages/cli prepublishOnly guard on the legit publish path.
+          DELFINI_PUBLISH_OK: '1'
+          # Provenance (public repo): npm config via env — never a --provenance flag.
+          NPM_CONFIG_PROVENANCE: 'true'

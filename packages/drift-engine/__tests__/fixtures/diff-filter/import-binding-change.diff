@@ -1,0 +1,8 @@
+diff --git a/src/uses.ts b/src/uses.ts
+index 111..222 100644
+--- a/src/uses.ts
++++ b/src/uses.ts
+@@ -1,2 +1,2 @@
+-import { foo } from './a'
++import { foo, bar } from './a'
+ export const x = foo

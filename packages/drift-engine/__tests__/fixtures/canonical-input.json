@@ -1,0 +1,23 @@
+{
+  "diff": "diff --git a/src/payments/handler.ts b/src/payments/handler.ts\nindex 1111111..2222222 100644\n--- a/src/payments/handler.ts\n+++ b/src/payments/handler.ts\n@@ -10,3 +10,5 @@\n-await paymentClient.batch(transactions)\n+for (const tx of transactions) {\n+  await paymentClient.process(tx)\n+}\ndiff --git a/src/notifications/email-sender.ts b/src/notifications/email-sender.ts\nnew file mode 100644\nindex 0000000..3333333\n--- /dev/null\n+++ b/src/notifications/email-sender.ts\n@@ -0,0 +1,3 @@\n+export function sendWelcomeEmail(userId: string) {\n+  return Promise.resolve()\n+}\n",
+  "docs": [
+    {
+      "path": "docs/snapshot-fixtures/architecture.md",
+      "content": "# Architecture\n\n## 3.2 Payment Integration\n\nThe payment service processes transactions in batch via the /v2/batch endpoint.\nAll payment operations MUST use batch mode to stay within rate limits.",
+      "frontMatterLineCount": 3
+    },
+    {
+      "path": "docs/snapshot-fixtures/project-context.md",
+      "content": "# Project Context\n\n## Technology Stack & Versions\n\n- TypeScript ^5.7.2\n- Node.js / Edge (Vercel)\n\n## Async Patterns\n\nUse async/await — no raw .then() chains.",
+      "frontMatterLineCount": 0
+    }
+  ],
+  "prMetadata": {
+    "owner": "delfini-fixtures",
+    "repo": "snapshot-parity",
+    "prNumber": 42,
+    "headSha": "0000000000000000000000000000000000000001",
+    "baseSha": "0000000000000000000000000000000000000002",
+    "title": "Snapshot parity canonical fixture"
+  }
+}

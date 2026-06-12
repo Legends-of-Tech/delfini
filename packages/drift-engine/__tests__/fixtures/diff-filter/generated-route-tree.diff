@@ -1,0 +1,22 @@
+diff --git a/apps/web/src/routeTree.gen.ts b/apps/web/src/routeTree.gen.ts
+index aaa..bbb 100644
+--- a/apps/web/src/routeTree.gen.ts
++++ b/apps/web/src/routeTree.gen.ts
+@@ -1,2 +1,2 @@
+-// auto-generated
++// auto-generated v2
+ export const routeTree = {}
+diff --git a/apps/web/dist/index.js b/apps/web/dist/index.js
+index ccc..ddd 100644
+--- a/apps/web/dist/index.js
++++ b/apps/web/dist/index.js
+@@ -1 +1 @@
+-console.log("a")
++console.log("b")
+diff --git a/src/keep.ts b/src/keep.ts
+index 1..2 100644
+--- a/src/keep.ts
++++ b/src/keep.ts
+@@ -1 +1 @@
+-x
++y

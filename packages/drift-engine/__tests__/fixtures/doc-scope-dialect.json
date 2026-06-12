@@ -1,0 +1,28 @@
+{
+  "_comment": "ADR-2026-06-01 dialect-parity fixture. Single source of truth for the picomatch@4 glob dialect across BOTH consumers: drift-engine's isFileInDocScope (Story P3.6.1) AND the @delfini/cli expander's effective matching (Story P3.6.2 reuses this exact table). Keep self-contained JSON with no imports so the CLI test can load the identical file. Each row: { name, scope, filePath, expected }.",
+  "cases": [
+    { "name": "dir entry matches direct .md child", "scope": ["docs"], "filePath": "docs/a.md", "expected": true },
+    { "name": "dir entry matches recursive nested child", "scope": ["docs"], "filePath": "docs/sub/b.md", "expected": true },
+    { "name": "dir entry does not match sibling tree", "scope": ["docs"], "filePath": "src/a.md", "expected": false },
+    { "name": "dir entry with trailing slash is equivalent", "scope": ["docs/"], "filePath": "docs/a.md", "expected": true },
+    { "name": "dir entry matches non-md file in subtree (predicate is path-shape-only)", "scope": ["docs"], "filePath": "docs/diagram.png", "expected": true },
+    { "name": "exact file entry matches itself", "scope": ["docs/architecture.md"], "filePath": "docs/architecture.md", "expected": true },
+    { "name": "exact file entry near-miss prefix does not match", "scope": ["docs/a.md"], "filePath": "docs/ab.md", "expected": false },
+    { "name": "exact file entry does not match different dir", "scope": ["docs/a.md"], "filePath": "other/a.md", "expected": false },
+    { "name": "single-star glob matches same-dir .md", "scope": ["docs/*.md"], "filePath": "docs/a.md", "expected": true },
+    { "name": "single-star glob does not cross directory boundary", "scope": ["docs/*.md"], "filePath": "docs/sub/a.md", "expected": false },
+    { "name": "globstar glob matches nested .md", "scope": ["**/*.md"], "filePath": "docs/sub/a.md", "expected": true },
+    { "name": "globstar glob matches root .md", "scope": ["**/*.md"], "filePath": "README.md", "expected": true },
+    { "name": "globstar glob does not match non-md", "scope": ["**/*.md"], "filePath": "src/index.ts", "expected": false },
+    { "name": "nested single-star glob matches one level", "scope": ["packages/*/README.md"], "filePath": "packages/cli/README.md", "expected": true },
+    { "name": "nested single-star glob does not match deeper", "scope": ["packages/*/README.md"], "filePath": "packages/cli/src/README.md", "expected": false },
+    { "name": "multi-entry scope matches via second entry", "scope": ["src", "docs/*.md"], "filePath": "docs/a.md", "expected": true },
+    { "name": "multi-entry scope matches via dir entry", "scope": ["src", "docs/*.md"], "filePath": "src/deep/file.ts", "expected": true },
+    { "name": "multi-entry scope matches nothing", "scope": ["src", "docs/*.md"], "filePath": "lib/x.ts", "expected": false },
+    { "name": "empty scope never matches", "scope": [], "filePath": "docs/a.md", "expected": false },
+    { "name": "file path with leading ./ is normalized", "scope": ["docs"], "filePath": "./docs/a.md", "expected": true },
+    { "name": "dot-prefix scope entry matches its subtree (hidden-dir convention)", "scope": [".github"], "filePath": ".github/workflows/x.yml", "expected": true },
+    { "name": "extensionless file in dir-scoped subtree matches (path-shape-only)", "scope": ["docs"], "filePath": "docs/LICENSE", "expected": true },
+    { "name": "case-insensitive match aligns with CLI expander default", "scope": ["docs"], "filePath": "Docs/architecture.md", "expected": true }
+  ]
+}

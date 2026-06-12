@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "doc_scope": [
+    "README.md",
+    "apps/action/README.md",
+    "packages/cli/README.md",
+    "packages/drift-engine/README.md",
+    "packages/action-core/README.md",
+    "docs/delfini-prompts/delfini-compare-diffs.md"
+  ]
+}

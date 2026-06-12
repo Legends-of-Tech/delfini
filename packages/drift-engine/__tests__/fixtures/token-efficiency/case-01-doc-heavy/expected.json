@@ -1,0 +1,7 @@
+{
+  "groundTruthDocPath": "docs/payments-architecture.md",
+  "groundTruthSection": {
+    "startLineIndex": 24,
+    "headingText": "## Payment Processing"
+  }
+}
