@@ -2,6 +2,11 @@
   "name": "@delfini/cli",
   "version": "0.2.0",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Legends-of-Tech/delfini.git",
+    "directory": "packages/cli"
+  },
   "type": "module",
   "publishConfig": {
     "access": "public"

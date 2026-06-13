@@ -3,6 +3,11 @@
   "version": "0.1.1",
   "private": false,
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Legends-of-Tech/delfini.git",
+    "directory": "packages/action-core"
+  },
   "publishConfig": {
     "access": "public"
   },
