@@ -14,30 +14,38 @@ name: CLI Auto-Release
 #   trigger (push:main vs workflow_dispatch) and credential plumbing differ.
 #   Do NOT invent a different publish invocation.
 #
-# Provenance (ENABLED — public repo):
-#   npm provenance requires a PUBLIC source GitHub repo — sigstore publicly
-#   attests the build. Legends-of-Tech/delfini is public, so provenance is
-#   enabled via the two supported toggles:
-#     (1) `permissions: id-token: write` — GitHub mints the OIDC token sigstore needs;
-#     (2) `NPM_CONFIG_PROVENANCE: 'true'` in the changesets/action step env.
-#   Do NOT add a `--provenance` flag anywhere: `changeset publish` does not
-#   accept it (only --tag / --otp / --no-git-tag). `--access public` comes from
-#   .changeset/config.json `access: "public"` + each package's
-#   `publishConfig.access` — not a CLI flag.
+# Auth + Provenance (npm Trusted Publishing / OIDC — no long-lived token):
+#   This workflow authenticates to npm via OIDC trusted publishing, configured
+#   per-package on npmjs.com (Settings → Trusted Publisher → GitHub Actions,
+#   Legends-of-Tech/delfini, workflow `cli-auto-release.yml`) for all THREE
+#   published packages (@delfini/cli, @delfini/drift-engine, @delfini/action-core).
+#   GitHub mints a short-lived OIDC token (`permissions: id-token: write`); the
+#   npm CLI exchanges it for an ephemeral publish credential — there is NO
+#   NODE_AUTH_TOKEN / NPM_TOKEN here. Trusted publishing also yields a sigstore
+#   provenance attestation automatically (the public-repo requirement is met),
+#   so no version published from here is unattested.
+#   Requirements (all satisfied below):
+#     (1) `permissions: id-token: write`;
+#     (2) npm CLI >= 11.5.1 on the runner — actions/setup-node + Node 20 ships
+#         npm 10.x, so the "Upgrade npm (OIDC trusted publishing)" step bumps it;
+#     (3) the trusted-publisher entry on npmjs.com matching this org/repo/workflow.
+#   `NPM_CONFIG_PROVENANCE: 'true'` is kept as belt-and-suspenders. Do NOT add a
+#   `--provenance` flag: `changeset publish` doesn't accept it. `--access public`
+#   comes from .changeset/config.json + each package's `publishConfig.access`.
 #
 # Release state: the repo is out of changesets pre-release mode (no
 # .changeset/pre.json — stable GA versions only). On a Version-PR merge the
 # consumed .changeset/*.md files are deleted, hasChangesets flips false, and
 # this workflow auto-publishes with no manual step.
 #
-# DELFINI_PUBLISH_OK guard + auth footgun (carried from cli-release.yml):
+# DELFINI_PUBLISH_OK guard:
 #   - packages/cli/package.json `prepublishOnly` blocks stray `npm publish`
 #     unless DELFINI_PUBLISH_OK=1 (the changesets-driven path is the legit bypass).
-#   - actions/setup-node `registry-url:` writes ~/.npmrc with the NODE_AUTH_TOKEN
-#     mapping; without it `pnpm release` runs unauthenticated → ENEEDAUTH.
 #
 # Coexists with .github/workflows/cli-release.yml (workflow_dispatch manual
-# fallback). Two workflows, identical publish command, different triggers.
+# break-glass fallback) — that one is STILL token-authed (NPM_TOKEN) and is the
+# emergency path if OIDC publishing ever fails. Same publish command, different
+# trigger + auth.
 
 on:
   push:
@@ -153,9 +161,16 @@ jobs:
         with:
           node-version: 20
           cache: 'pnpm'
-          # Load-bearing: writes ~/.npmrc with the auth-token mapping so
-          # `pnpm release` → `npm publish` is authenticated (else ENEEDAUTH).
+          # Points npm at the public registry. No auth token is written —
+          # OIDC trusted publishing provides the ephemeral credential.
           registry-url: 'https://registry.npmjs.org'
+
+      # OIDC trusted publishing requires npm CLI >= 11.5.1; Node 20 bundles
+      # npm 10.x, which would silently fall back to (now-absent) token auth and
+      # fail ENEEDAUTH. Upgrade the global npm that `changeset publish` shells
+      # out to. Pin to a known-OIDC-capable major if reproducibility bites.
+      - name: Upgrade npm (OIDC trusted publishing)
+        run: npm install -g npm@latest
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -187,9 +202,11 @@ jobs:
         env:
           # changelog-github (the version step) + changesets/action PR creation.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # npm auth for the publish step (the repo's NPM_TOKEN secret).
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # No NODE_AUTH_TOKEN: the publish step authenticates via OIDC trusted
+          # publishing (see the header). The id-token: write permission +
+          # npm >= 11.5.1 + the npmjs.com trusted-publisher entry are the auth.
           # Bypass the packages/cli prepublishOnly guard on the legit publish path.
           DELFINI_PUBLISH_OK: '1'
-          # Provenance (public repo): npm config via env — never a --provenance flag.
+          # Provenance: automatic under trusted publishing; kept explicit as
+          # belt-and-suspenders. Never a --provenance flag.
           NPM_CONFIG_PROVENANCE: 'true'
