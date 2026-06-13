@@ -33,6 +33,17 @@ name: CLI Auto-Release
 #   `--provenance` flag: `changeset publish` doesn't accept it. `--access public`
 #   comes from .changeset/config.json + each package's `publishConfig.access`.
 #
+# Version-PR / git-push auth (separate from npm publish auth above):
+#   changesets/action opens the "Version Packages" PR and pushes the
+#   changeset-release/main branch using the token in its GITHUB_TOKEN env. The
+#   default GITHUB_TOKEN cannot open PRs here — the repo/org "Allow GitHub
+#   Actions to create and approve pull requests" toggle is OFF by design — so
+#   this step is wired to the RELEASE_PAT secret instead (fine-grained PAT or
+#   GitHub App token; Contents + Pull requests read/write on this repo). It
+#   falls back to GITHUB_TOKEN if RELEASE_PAT is unset (branch push works, PR
+#   open does not). This keeps the security guardrail ON while still automating
+#   the Version PR. See the env block on the release step.
+#
 # Release state: the repo is out of changesets pre-release mode (no
 # .changeset/pre.json — stable GA versions only). On a Version-PR merge the
 # consumed .changeset/*.md files are deleted, hasChangesets flips false, and
@@ -200,8 +211,20 @@ jobs:
           title: 'Version Packages (@delfini/cli)'
           commit: 'chore(release): version @delfini/cli'
         env:
-          # changelog-github (the version step) + changesets/action PR creation.
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # changelog-github (the version step) + changesets/action git push +
+          # Version-PR creation. Uses RELEASE_PAT — a fine-grained PAT (or
+          # GitHub App installation token) scoped to this repo with
+          # Contents: read/write + Pull requests: read/write. The default
+          # GITHUB_TOKEN is BLOCKED from opening PRs by the org/repo
+          # "Allow GitHub Actions to create and approve pull requests" guardrail
+          # (intentionally left OFF), which is why this step needs a PAT.
+          # Falls back to GITHUB_TOKEN when RELEASE_PAT is unset: that still
+          # pushes the changeset-release/main branch + bumps versions, but
+          # CANNOT open the Version PR (the failure this replaces). Set the
+          # RELEASE_PAT secret to enable end-to-end auto-release.
+          # NOTE: npm publish auth is unaffected — it is OIDC trusted
+          # publishing (see header), not token-based.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
           # No NODE_AUTH_TOKEN: the publish step authenticates via OIDC trusted
           # publishing (see the header). The id-token: write permission +
           # npm >= 11.5.1 + the npmjs.com trusted-publisher entry are the auth.
