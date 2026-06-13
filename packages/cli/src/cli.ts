@@ -6,7 +6,8 @@
 //   --version         print the @delfini/cli version (exits 0)
 //   --reset-scope     delete <repo-root>/.claude/skills/delfini/doc-scope.json
 //                     (silent no-op if absent / if outside a git repo, exits 0)
-//   install <path>    scaffold .claude/skills/delfini/SKILL.md + CLAUDE.md
+//   install <path>    scaffold .claude/skills/delfini/SKILL.md + optional
+//                     doc-scope.json seeding (prompt or --scope) + CLAUDE.md
 //                     marker block + .gitignore .delfini-trace/ append
 //   local-prepare     compute diff (per --diff-source) + scope expansion +
 //                     prompt + token-budget; write the three .delfini-trace/
@@ -37,7 +38,7 @@ import { fileURLToPath } from 'node:url'
 import { Command, CommanderError } from 'commander'
 
 import { runDiffStatus } from './commands/diff-status.js'
-import { runInstall } from './commands/install.js'
+import { parseScopeInput, runInstall } from './commands/install.js'
 import { runLocalFinalize } from './commands/local-finalize.js'
 import { DEFAULT_RELEVANCE_THRESHOLD, runLocalPrepare } from './commands/local-prepare.js'
 import { deleteDocScope } from './doc-scope.js'
@@ -102,15 +103,28 @@ export async function main(argv: string[]): Promise<void> {
     .option('--tool <agent>', "Coding agent target (only 'CLAUDE' supported in V1)", 'CLAUDE')
     .option('--auto-invoke', 'append the CLAUDE.md auto-invoke block without prompting')
     .option('--no-auto-invoke', 'strip the CLAUDE.md auto-invoke block without prompting')
-    .action(async (targetPath: string, opts: { tool: string; autoInvoke?: boolean }) => {
-      // Tri-state: undefined (no flag) → interactive prompt inside runInstall;
-      // true (--auto-invoke) → append; false (--no-auto-invoke) → strip.
-      const confirmAutoInvoke =
-        opts.autoInvoke === undefined
-          ? undefined
-          : (): Promise<boolean> => Promise.resolve(opts.autoInvoke as boolean)
-      await runInstall(targetPath, { tool: opts.tool, confirmAutoInvoke })
-    })
+    .option(
+      '--scope <paths>',
+      'Seed doc-scope.json with these paths (space- or comma-separated; overwrites any ' +
+        'existing scope) without prompting. Omit to be prompted interactively on a TTY.',
+    )
+    .action(
+      async (targetPath: string, opts: { tool: string; autoInvoke?: boolean; scope?: string }) => {
+        // Tri-state: undefined (no flag) → interactive prompt inside runInstall;
+        // true (--auto-invoke) → append; false (--no-auto-invoke) → strip.
+        const confirmAutoInvoke =
+          opts.autoInvoke === undefined
+            ? undefined
+            : (): Promise<boolean> => Promise.resolve(opts.autoInvoke as boolean)
+        // undefined (no --scope) → interactive prompt inside runInstall;
+        // present → seed doc-scope.json from the parsed path list.
+        const provideDocScope =
+          opts.scope === undefined
+            ? undefined
+            : (): Promise<string[]> => Promise.resolve(parseScopeInput(opts.scope as string))
+        await runInstall(targetPath, { tool: opts.tool, confirmAutoInvoke, provideDocScope })
+      },
+    )
 
   program
     .command('local-prepare')

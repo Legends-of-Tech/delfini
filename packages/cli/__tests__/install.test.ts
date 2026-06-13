@@ -14,9 +14,12 @@ import simpleGit from 'simple-git'
 import {
   InstallToolNotSupportedError,
   RepoRootNotFoundError,
+  readDocScope,
   runInstall,
 } from '../src/index.js'
-import { parseYesNo } from '../src/commands/install.js'
+import { parseScopeInput, parseYesNo } from '../src/commands/install.js'
+
+const DOC_SCOPE_REL = join('.claude', 'skills', 'delfini', 'doc-scope.json')
 
 const OPEN_MARKER = '<!-- delfini:auto-invoke-block-v1 -->'
 const CLOSE_MARKER = '<!-- /delfini:auto-invoke-block-v1 -->'
@@ -26,6 +29,15 @@ const CLOSE_MARKER = '<!-- /delfini:auto-invoke-block-v1 -->'
 // SKIPS the CLAUDE.md mutation).
 const yes = (): Promise<boolean> => Promise.resolve(true)
 const no = (): Promise<boolean> => Promise.resolve(false)
+
+// Doc-scope seam. Returning a non-empty array drives the write/overwrite
+// path; an empty array drives the no-op path. Injecting this keeps doc-scope
+// seeding deterministic and TTY-independent (a bare runInstall on a non-TTY
+// stdin SKIPS the doc-scope prompt).
+const scope =
+  (paths: string[]) =>
+  (): Promise<string[]> =>
+    Promise.resolve(paths)
 
 function mkTmp(): string {
   return mkdtempSync(join(tmpdir(), 'delfini-install-test-'))
@@ -601,6 +613,132 @@ describe('runInstall — determinism (NFR46 spirit)', () => {
     expect(skillSecond).toEqual(skillFirst)
     expect(claudeSecond).toEqual(claudeFirst)
     expect(gitignoreSecond).toEqual(gitignoreFirst)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// doc-scope.json seeding (interactive scope prompt + --scope seam)
+// ---------------------------------------------------------------------------
+
+describe('parseScopeInput — free-text path list parser', () => {
+  it('splits on whitespace, trims, drops empties', () => {
+    expect(parseScopeInput('docs/ specs/architecture.md')).toEqual([
+      'docs/',
+      'specs/architecture.md',
+    ])
+    expect(parseScopeInput('  docs/   README.md  ')).toEqual(['docs/', 'README.md'])
+  })
+
+  it('splits on commas and mixed comma/space', () => {
+    expect(parseScopeInput('docs/,specs/a.md')).toEqual(['docs/', 'specs/a.md'])
+    expect(parseScopeInput('docs/, specs/a.md ,  b.md')).toEqual([
+      'docs/',
+      'specs/a.md',
+      'b.md',
+    ])
+  })
+
+  it('returns an empty array for blank / whitespace-only input', () => {
+    expect(parseScopeInput('')).toEqual([])
+    expect(parseScopeInput('   ')).toEqual([])
+    expect(parseScopeInput(' , , ')).toEqual([])
+  })
+})
+
+describe('runInstall — doc-scope.json seeding via provideDocScope', () => {
+  let repoRoot: string
+
+  beforeEach(async () => {
+    repoRoot = await mkGitRepo()
+  })
+
+  afterEach(() => {
+    rmSync(repoRoot, { recursive: true, force: true })
+  })
+
+  it('writes doc-scope.json with the canonical v1 shape from a non-empty list', async () => {
+    await runInstall(repoRoot, {
+      logger: makeLogger(),
+      provideDocScope: scope(['docs/', 'specs/architecture.md']),
+    })
+    expect(existsSync(join(repoRoot, DOC_SCOPE_REL))).toBe(true)
+    const parsed = await readDocScope(repoRoot)
+    expect(parsed).toEqual({ version: 1, doc_scope: ['docs', 'specs/architecture.md'] })
+  })
+
+  it('does not write doc-scope.json when the list is empty (no-op)', async () => {
+    const logger = makeLogger()
+    await runInstall(repoRoot, { logger, provideDocScope: scope([]) })
+    expect(existsSync(join(repoRoot, DOC_SCOPE_REL))).toBe(false)
+    const allLogs = logger.log.mock.calls.map((c) => c.join(' ')).join('\n')
+    expect(allLogs).toMatch(/doc-scope\.json/)
+    expect(allLogs).toMatch(/no paths provided/i)
+  })
+
+  it('drops blank entries from the provided list before writing', async () => {
+    await runInstall(repoRoot, {
+      logger: makeLogger(),
+      provideDocScope: scope(['docs/', '  ', '']),
+    })
+    const parsed = await readDocScope(repoRoot)
+    expect(parsed).toEqual({ version: 1, doc_scope: ['docs'] })
+  })
+
+  it('overwrites an existing scope when --scope/seam is given (explicit intent)', async () => {
+    await runInstall(repoRoot, { logger: makeLogger(), provideDocScope: scope(['docs/']) })
+    await runInstall(repoRoot, {
+      logger: makeLogger(),
+      provideDocScope: scope(['specs/', 'README.md']),
+    })
+    const parsed = await readDocScope(repoRoot)
+    expect(parsed).toEqual({ version: 1, doc_scope: ['specs', 'README.md'] })
+  })
+
+  it('warn-and-skips an invalid path (escape) without aborting the scaffold', async () => {
+    const logger = makeLogger()
+    // `../outside` escapes the repo root — rejected by writeDocScope.
+    await expect(
+      runInstall(repoRoot, { logger, provideDocScope: scope(['../outside']) }),
+    ).resolves.toBeUndefined()
+    // doc-scope.json NOT written…
+    expect(existsSync(join(repoRoot, DOC_SCOPE_REL))).toBe(false)
+    // …but the rest of the scaffold still completed.
+    expect(existsSync(join(repoRoot, '.claude', 'skills', 'delfini', 'SKILL.md'))).toBe(true)
+    expect(existsSync(join(repoRoot, '.gitignore'))).toBe(true)
+    const allLogs = logger.log.mock.calls.map((c) => c.join(' ')).join('\n')
+    expect(allLogs).toMatch(/doc-scope\.json.*skipped/i)
+  })
+})
+
+describe('runInstall — doc-scope.json default (no seam) behaviour', () => {
+  let repoRoot: string
+
+  beforeEach(async () => {
+    repoRoot = await mkGitRepo()
+  })
+
+  afterEach(() => {
+    rmSync(repoRoot, { recursive: true, force: true })
+  })
+
+  it('skips the scope prompt on a non-TTY stdin and writes nothing', async () => {
+    // The file-level beforeAll forces isTTY=false, so a no-seam call hits skip.
+    const logger = makeLogger()
+    await runInstall(repoRoot, { logger })
+    expect(existsSync(join(repoRoot, DOC_SCOPE_REL))).toBe(false)
+    const allLogs = logger.log.mock.calls.map((c) => c.join(' ')).join('\n')
+    expect(allLogs).toMatch(/non-interactive shell: scope prompt skipped/i)
+  })
+
+  it('never clobbers an already-configured scope on a no-seam re-run', async () => {
+    // Seed a scope, then re-run install with NO seam: the file must survive.
+    await runInstall(repoRoot, { logger: makeLogger(), provideDocScope: scope(['docs/']) })
+    const logger = makeLogger()
+    await runInstall(repoRoot, { logger })
+    const parsed = await readDocScope(repoRoot)
+    expect(parsed).toEqual({ version: 1, doc_scope: ['docs'] })
+    const allLogs = logger.log.mock.calls.map((c) => c.join(' ')).join('\n')
+    expect(allLogs).toMatch(/already configured/i)
   })
 })
 

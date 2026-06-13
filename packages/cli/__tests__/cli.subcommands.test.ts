@@ -139,6 +139,41 @@ describe('cli.ts — `install <path>` subcommand', () => {
     }
   })
 
+  it('--scope seeds doc-scope.json non-interactively (no prompt)', async () => {
+    const repo = await makeTempGitRepo()
+    try {
+      process.chdir(repo)
+      vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+      vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+      vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      // --scope provides the path list, so the install never reaches the
+      // interactive scope prompt (would otherwise hang under a TTY stdin).
+      await main([
+        'node',
+        'delfini',
+        'install',
+        repo,
+        '--auto-invoke',
+        '--scope',
+        'docs/ specs/architecture.md',
+      ])
+
+      const docScopePath = path.join(
+        repo,
+        '.claude',
+        'skills',
+        'delfini',
+        'doc-scope.json',
+      )
+      const raw = await fs.readFile(docScopePath, 'utf8')
+      const parsed = JSON.parse(raw) as { version: number; doc_scope: string[] }
+      expect(parsed).toEqual({ version: 1, doc_scope: ['docs', 'specs/architecture.md'] })
+    } finally {
+      await rmrf(repo, originalCwd)
+    }
+  })
+
   it('passes --tool CLAUDE through to runInstall as the default tool', async () => {
     const repo = await makeTempGitRepo()
     try {
