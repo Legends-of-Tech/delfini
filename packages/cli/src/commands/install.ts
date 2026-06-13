@@ -3,18 +3,27 @@
 // Single-write surface, with an interactive auto-invoke opt-in toggle:
 //   1. writes `.claude/skills/delfini/SKILL.md` (overwrite — the documented
 //      upgrade path per architecture.md L1142)
-//   2. interactively asks "Auto-invoke /delfini on PR creation? (y/n)" — on
+//   2. interactively asks "Which docs should Delfini track?" and, when the
+//      user supplies one or more paths, persists them to
+//      `.claude/skills/delfini/doc-scope.json` via the shared `writeDocScope`
+//      primitive. Skips silently when a scope is already configured (never
+//      clobbers the committed, team-shared file), when the answer is blank,
+//      or on a non-TTY stdin — in every skip case the SKILL.md first-run
+//      prompt remains the fallback that seeds the scope later.
+//   3. interactively asks "Auto-invoke /delfini on PR creation? (y/n)" — on
 //      YES idempotently appends a marker-bounded block to `CLAUDE.md`
 //      (creates the file if absent; never duplicates); on NO strips an
 //      existing marked block (toggle off; no-op if absent). On a non-TTY
 //      stdin with no explicit decision, the CLAUDE.md step is skipped
 //      entirely (never blocks; never forces opt-in without consent).
-//   3. appends `.delfini-trace/` to `.gitignore` (delegates to
+//   4. appends `.delfini-trace/` to `.gitignore` (delegates to
 //      `appendToGitignore` from `../trace.js` — do NOT reimplement)
 //
 // The auto-invoke decision is injectable via `confirmAutoInvoke` (the
-// `--auto-invoke` / `--no-auto-invoke` CLI flags and the test seam); when
-// omitted the default interactive readline prompt runs.
+// `--auto-invoke` / `--no-auto-invoke` CLI flags and the test seam); the
+// doc-scope path list is injectable via `provideDocScope` (the `--scope` CLI
+// flag and the test seam). When either is omitted the corresponding default
+// interactive readline prompt runs.
 //
 // Failure modes:
 //   - `--tool` not 'CLAUDE'     → throws InstallToolNotSupportedError (NG2)
@@ -30,6 +39,12 @@ import { dirname, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
 
+import {
+  DOC_SCOPE_RELATIVE_PATH,
+  DocScopeValidationError,
+  docScopeExists,
+  writeDocScope,
+} from '../doc-scope.js'
 import { getRepoRoot } from '../git.js'
 import { appendToGitignore } from '../trace.js'
 
@@ -53,6 +68,18 @@ export interface RunInstallOptions {
    * non-TTY stdin (never blocks, never forces opt-in without consent).
    */
   confirmAutoInvoke?: () => Promise<boolean>
+  /**
+   * Resolves the doc-scope path list. When provided, `runInstall` uses it
+   * directly (the `--scope` CLI flag and the test seam) and never prompts —
+   * a non-empty list is persisted to `doc-scope.json` (overwriting any
+   * existing file, since an explicit `--scope` is intent-to-overwrite); an
+   * empty list is a no-op. When omitted, `runInstall` prompts interactively
+   * on a TTY only if no `doc-scope.json` exists yet; on a non-TTY stdin, or
+   * when a scope is already configured, it leaves `doc-scope.json` untouched.
+   * Invalid paths (rejected by `writeDocScope`) warn-and-skip — the scaffold
+   * always completes; the SKILL.md first-run prompt re-seeds the scope later.
+   */
+  provideDocScope?: () => Promise<string[]>
 }
 
 /** Resolved auto-invoke decision: append, strip, or leave CLAUDE.md untouched. */
@@ -131,8 +158,116 @@ export async function runInstall(
   const repoRoot = await getRepoRoot(resolvedTarget)
 
   writeSkillTemplate(repoRoot, logger)
+  await applyDocScope(repoRoot, logger, options?.provideDocScope)
   await applyAutoInvokeDecision(repoRoot, logger, options?.confirmAutoInvoke)
   appendGitignoreLine(repoRoot, logger)
+}
+
+// -- Doc-scope seeding (interactive path list) -------------------------------
+
+/**
+ * Split a free-text answer into a path list. Whitespace- and/or comma-
+ * separated; trimmed; empties dropped. Exported for unit testing and reused
+ * by the cli.ts `--scope` flag parser. NOT re-exported through the barrel.
+ */
+export function parseScopeInput(answer: string): string[] {
+  return answer
+    .split(/[\s,]+/u)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+}
+
+function sanitiseScope(paths: string[]): string[] {
+  return paths.map((entry) => entry.trim()).filter((entry) => entry.length > 0)
+}
+
+async function applyDocScope(
+  repoRoot: string,
+  logger: InstallLogger,
+  provideDocScope?: () => Promise<string[]>,
+): Promise<void> {
+  const target = join(repoRoot, DOC_SCOPE_RELATIVE_PATH)
+
+  // Explicit scope (`--scope` flag or test seam): write/overwrite. An empty
+  // list is a deliberate no-op rather than an error.
+  if (provideDocScope) {
+    const paths = sanitiseScope(await provideDocScope())
+    if (paths.length === 0) {
+      log(logger, `doc-scope.json → ${target} (no paths provided, no change)`)
+      return
+    }
+    await persistDocScope(repoRoot, logger, target, paths)
+    return
+  }
+
+  // No explicit scope. Never clobber an existing committed, team-shared scope.
+  if (await docScopeExists(repoRoot)) {
+    log(logger, `doc-scope.json → ${target} (already configured, no change)`)
+    return
+  }
+
+  // Absent scope, non-TTY stdin: never block on a readline prompt. The
+  // SKILL.md first-run prompt seeds the scope on the first /delfini run.
+  if (!process.stdin.isTTY) {
+    log(
+      logger,
+      `doc-scope.json → ${target} (non-interactive shell: scope prompt skipped, no change)`,
+    )
+    return
+  }
+
+  const paths = await promptDocScope()
+  if (paths.length === 0) {
+    log(
+      logger,
+      `doc-scope.json → ${target} (no paths provided, no change — first /delfini run will prompt)`,
+    )
+    return
+  }
+  await persistDocScope(repoRoot, logger, target, paths)
+}
+
+async function promptDocScope(): Promise<string[]> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    const answer = await rl.question(
+      'Which docs should Delfini track? Enter one or more paths — directories ' +
+        '(recursive .md scan), files, or globs, space- or comma-separated ' +
+        '(e.g. `docs/ specs/architecture.md packages/*/README.md`). Leave blank to skip: ',
+    )
+    return parseScopeInput(answer)
+  } finally {
+    // Closing the interface is load-bearing — leaving it open keeps stdin
+    // referenced and the process never exits (mirrors promptAutoInvoke).
+    rl.close()
+  }
+}
+
+async function persistDocScope(
+  repoRoot: string,
+  logger: InstallLogger,
+  target: string,
+  paths: string[],
+): Promise<void> {
+  try {
+    // Delegate validation + normalisation + write to the shared primitive.
+    // Pass repoRoot so writeDocScope does not re-run getRepoRoot().
+    await writeDocScope(paths, { repoRoot })
+    log(logger, `doc-scope.json → ${target} (wrote ${paths.length} path(s))`)
+  } catch (err) {
+    if (err instanceof DocScopeValidationError) {
+      // Warn-and-skip: a bad path must not abort the rest of the scaffold.
+      log(
+        logger,
+        `doc-scope.json → ${target} (skipped — ${err.message}). ` +
+          `Fix the path(s) and re-run \`delfini install\`, edit the file directly, ` +
+          `or set the scope on the first /delfini run.`,
+      )
+      return
+    }
+    // Real I/O failures (EACCES, ENOSPC, …) still bubble.
+    throw err
+  }
 }
 
 // -- Auto-invoke opt-in (interactive toggle) ---------------------------------
