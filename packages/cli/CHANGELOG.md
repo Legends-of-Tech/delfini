@@ -1,5 +1,11 @@
 # @delfini/cli
 
+## 0.2.0
+
+### Minor Changes
+
+- ⚙️ CLI: [#3](https://github.com/Legends-of-Tech/delfini/pull/3) [`ee4a2aa`](https://github.com/Legends-of-Tech/delfini/commit/ee4a2aae5dae4abe7946c2a21646221605bc5237) Thanks [@raymondht](https://github.com/raymondht)! - `delfini install` now seeds `.claude/skills/delfini/doc-scope.json`: it prompts for the docs to track on a TTY, and adds a `--scope <paths>` flag (space- or comma-separated) for non-interactive seeding. Never clobbers an already-configured scope unless `--scope` is given; blank input / non-TTY / invalid paths warn-and-skip, leaving the SKILL.md first-run prompt as the fallback.
+
 Releases prior to the public split were developed and published from the private Delfini
 development repository; this public repo starts from a squashed clean root. See the
 [npm versions page](https://www.npmjs.com/package/@delfini/cli?activeTab=versions) for the
