@@ -29,3 +29,21 @@ scripts/**/*.js.map
 
 # Per-run Delfini Skill trace artefacts (FR148) — rebuilt every run, never committed.
 .delfini-trace/
+
+# ── Internal planning record — MUST NEVER land in this public repo ──
+# The Delfini BMad planning record (PRD, architecture, epics, stories,
+# sprint-status, project-context, security white-paper) is cross-cutting and
+# secret-dense; per ADR-2026-06-09 it lives ONLY in the closed
+# Legends-of-Tech/delfini-platform repo + the private raymondht/delfini backup.
+# This backstop lets a maintainer keep a LOCAL working overlay of that record
+# inside their public clone (to drive BMad natively) while git physically
+# refuses to stage it — see DEVELOPING the OSS packages with BMad in
+# delfini-platform/DEVELOPING.md.
+_bmad-output/
+_bmad/
+.claude/skills/bmad-*/
+graphify-out/
+security-white-paper.md
+# The internal repo-rules CLAUDE.md (closed-platform conventions). The public
+# repo's own contributor guidance is CONTRIBUTING.md, not this file.
+/CLAUDE.md
