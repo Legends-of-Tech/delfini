@@ -26,6 +26,12 @@ permissions:
 
 jobs:
   changeset-check:
+    # Skip the automated "Version Packages" PR opened by changesets/action
+    # (cli-auto-release.yml). That PR's whole job is to CONSUME pending
+    # changesets — it deletes the .changeset/*.md files and bumps versions — so
+    # `changeset status` legitimately finds changed packages with no changeset
+    # and would always fail this gate. The PR is pushed from changeset-release/main.
+    if: github.head_ref != 'changeset-release/main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
