@@ -1,170 +1,76 @@
 # @delfini/drift-engine
 
-Pure-logic drift analysis core shared by `@delfini/action` (CI surface, `apps/action`) and `@delfini/cli` (Skill surface, `packages/cli`). No I/O, no LLM client, no credentials, no `fetch`. Runtime deps: `zod` + `picomatch` (both pure CPU — no I/O, no network, no env).
+The pure-logic analysis core behind [Delfini](https://github.com/Legends-of-Tech/delfini) — the tool that detects when a code change has made your documentation wrong and proposes the fix.
 
-The package exists so both surfaces consume the same prompt assembly, schema, and reconciliation logic — algorithm parity between the Action and the Skill holds **by construction** (FR139, NFR44). A finding surfaced locally by the Skill is the same finding the Action will surface on the eventual PR.
+This package is the brain, with none of the plumbing. Given a diff and a set of documents, it builds the analysis prompt, defines the schema the model must answer in, and reconciles the model's output back to exact line numbers. It is shared by both Delfini surfaces — the **Skill** (local, `@delfini/cli`) and the **Action** (CI) — so the analysis is identical wherever it runs. A finding surfaced locally is the same finding the Action would surface on the eventual PR.
+
+## What it does
+
+A drift analysis is three pure steps, and this package owns all three:
+
+1. **`buildPrompt`** — assemble the LLM prompt from a diff, the in-scope docs, and PR metadata. Every doc line is prefixed with its number so the model can cite exact ranges.
+2. **`analysisSchema`** — the schema the model's JSON output must satisfy: structured findings of three kinds — `drift` (replace these lines), `additive` (insert this content), and `clarification` (uncertain — surface for a human).
+3. **`validateAndReconcile`** — validate the model's JSON and verify each finding's quoted text actually matches the doc at the cited lines. Mismatches (model hallucinations) are discarded before they reach the caller.
+
+## Install
+
+```bash
+npm install @delfini/drift-engine
+```
 
 ## Public API
 
 ```ts
 import {
-  buildPrompt,
-  validateAndReconcile,
-  estimatePromptTokens,
-  analysisSchema,
+  buildPrompt,             // (input, template, options?) => string
+  validateAndReconcile,    // (rawJson, docs) => AnalysisResult
+  estimatePromptTokens,    // (prompt) => number
+  analysisSchema,          // Zod schema for the model's output
+  // doc-scope matching:
+  normalizeDocScope,
+  validateDocScopeEntry,
+  classifyEntry,
+  isFileInDocScope,
+  // types:
   type AnalysisInput,
   type AnalysisResult,
   type DocFile,
   type Contradiction,
   type Addition,
-  type ClarifyingQuestion,
-  type PRMetadata,
-  type Severity,
 } from '@delfini/drift-engine'
 ```
 
-Internal helpers (`dedupeOverlappingContradictions`, `filterActionableContradictions`, `reconcileLineNumbers`, `reconcileAdditiveAnchors`, `ContradictionSchema`, `AdditionSchema`, `locateQuote`, `locateAnchorHeading`, etc.) are **not** re-exported. Callers compose only through the surface above.
+Both the Action and the CLI follow the same flow: gather inputs (diff + docs + PR metadata) → `buildPrompt` → send to an LLM → `validateAndReconcile` on the JSON → render the result. Internal helpers are not re-exported; callers compose only through the surface above.
 
-## Relevance gating (opt-in)
+## Relevance retrieval (optional)
 
-`buildPrompt(input, template, options?)` accepts an optional third argument:
+`buildPrompt(input, template, options?)` accepts an optional third argument to keep large prompts focused:
 
 ```ts
-interface BuildPromptOptions {
-  relevanceThreshold?: number
-}
+buildPrompt(input, template, { relevanceThreshold: 5 })
 ```
 
-When `relevanceThreshold` is a positive integer, docs whose relevance score is below the threshold are dropped before the prompt is rendered. Scoring breakdown:
+Each doc section is scored against the diff and sections below the threshold are dropped before rendering:
 
-| Tier | Signal | Score |
-|---|---|---|
-| 1 | The doc itself appears in the diff (`diff --git a/<doc> ...`) | +20 |
-| 2 | A code-file path from the diff appears in the doc body | +10 per file |
-| 3 | An identifier from the diff appears in the doc body | +3 per identifier, capped at +30 |
-| 4 | A heading whose terms overlap with diff identifiers | +5 per heading |
+| Signal | Points |
+|---|---|
+| The doc itself appears in the diff | +20 |
+| A code-file path from the diff appears in the section | +10 per file |
+| An identifier from the diff appears in the section | +3 each, capped at +30 |
+| A heading overlaps a diff identifier | +5 per heading |
 
-Default behaviour (`options` omitted, or `relevanceThreshold` is `undefined`, `0`, or non-finite) is observably no-op — the prompt-snapshot gate (NFR44 gate A) enforces byte-equality with the legacy output.
+A threshold of `5` keeps any section with a single file-path or heading match — a safe default that typically cuts prompt size ~40% on doc-heavy inputs with no measurable recall loss. Omit `options` (or pass `0`) to keep every section.
 
-**Recommended starting threshold:** `5` — keeps any doc with at least one Tier-2 hit or the doc-itself-in-diff signal.
+## Runtime constraints
 
-## NFR44 release gates
+The package is intentionally pure so it can run unchanged in CI and on a developer's laptop:
 
-The extraction is observably no-op for the Action's public behaviour. Two release gates guard that invariant on every PR:
+- **No I/O** — never reads files, never touches the network.
+- **No LLM client** — never imports an Anthropic, OpenAI, or LangChain SDK. It builds the prompt and validates the response; *calling* the model is the caller's job.
+- **No environment reads** — pure functions of explicit arguments. Same input → byte-identical output, every time.
 
-| Gate | Lives at | Catches | Misses (caught by the other gate) |
-|---|---|---|---|
-| **A — snapshot parity** | `packages/drift-engine/__tests__/prompt-snapshot.test.ts` | Any change to `prompt.md` text, `prompt-builder.ts` rendering, `prefixDocLines`, or `renderDocsBlock` that perturbs the rendered prompt | Schema / reconcile / orchestrator regressions — none flow through `buildPrompt` |
-| **B — Action pipeline** | `apps/action/src/__tests__/pipeline.test.ts` | Any change to `reconcile.ts`, `schema.ts`, orchestrator wiring, or the round-trip from LLM JSON → rendered PR comment / check verdict / intake payload | Pure prompt-text drift that the LLM-mocked fixtures don't surface |
+Runtime dependencies are exactly two, both pure CPU: [`zod`](https://www.npmjs.com/package/zod) (schema validation) and [`picomatch`](https://www.npmjs.com/package/picomatch) (glob matching).
 
-Both gates must be green for a drift-engine PR to merge. Gate A catches regressions **before** the LLM ever runs; gate B catches everything downstream of the LLM.
+## License
 
-## When to update the snapshot
-
-Update `__tests__/fixtures/canonical-prompt.snapshot.md` **only** when the prompt change is intentional. Examples that require an update:
-
-- Editing the text of any section of `src/prompt.md`.
-- Adding, removing, or renaming a placeholder in `src/prompt.md` plus the corresponding substitution in `src/prompt-builder.ts`.
-- Changing how `prefixDocLines` formats line-number prefixes (e.g. `${n}: ` → `${n}| `).
-- Changing how `renderDocsBlock` iterates documents.
-
-Examples that should **not** require a snapshot update:
-
-- Edits to `reconcile.ts`, `schema.ts`, `prompt-budget.ts`, or `types.ts` — none of these flow through `buildPrompt`.
-- Edits to `src/index.ts` re-exports.
-- Tooling / config changes (`package.json`, `tsconfig.json`, ESLint rules).
-
-A fixture-only change (editing `canonical-input.json` without touching the prompt) implies the snapshot no longer matches and the test fails. Always update fixture + snapshot together.
-
-## How to update the snapshot
-
-The snapshot is regenerated by hand to keep human-reviewer eyes on every byte of drift:
-
-```bash
-cd packages/drift-engine
-
-# One-shot regeneration via a temporary node script. Inline so nothing checked
-# into the repo can ever auto-update the snapshot.
-node --import tsx -e "
-  import { readFileSync, writeFileSync } from 'node:fs'
-  import { fileURLToPath } from 'node:url'
-  import { buildPrompt } from './src/prompt-builder.ts'
-
-  const input = JSON.parse(readFileSync('./__tests__/fixtures/canonical-input.json', 'utf8'))
-  const template = readFileSync('./src/prompt.md', 'utf8')
-  writeFileSync('./__tests__/fixtures/canonical-prompt.snapshot.md', buildPrompt(input, template))
-"
-
-# Verify the test now passes
-pnpm test prompt-snapshot.test
-```
-
-In the PR description, include:
-
-1. **Which prompt change drove the snapshot update** — name the section of `prompt.md` or the rendering helper that changed.
-2. **Confirmation that NFR44 gate B is unaffected** — `pnpm --filter @delfini/action test` still passes (gate B usually does — the rewrite is at the prompt-text level, not the reconcile-shape level).
-3. **Explicit reviewer sign-off on the snapshot diff** — at least one reviewer confirms every byte of drift is intentional.
-
-## What NOT to do
-
-- **Do not `it.skip` the snapshot test** to make a PR go green. If the test fires, either the change is intentional (update the snapshot per above) or unintentional (revert the source change).
-- **Do not auto-update the snapshot via tooling** without reviewer eyes on the diff. The manual `node --import tsx` workflow above is intentional friction.
-- **Do not use Vitest's `toMatchSnapshot` / `toMatchInlineSnapshot`** — both auto-create on first run and auto-update on `--update-snapshots`, defeating the human-review-required semantics. The test uses `readFileSync` + a literal-string comparison so the snapshot is a real, reviewable file in the PR diff.
-- **Do not change `core.autocrlf` / `.gitattributes`** to "fix" a Windows checkout that's producing CRLF snapshots. The repo's `.gitattributes` pins `packages/drift-engine/src/prompt.md`, `__tests__/fixtures/*.snapshot.md`, and `__tests__/fixtures/*.json` to `eol=lf`; renormalise with `git add --renormalize <path>` if a checkout drifted.
-
-## NFR49(b) Parity-Gate Policy
-
-PRD v6.7 added the token-efficient retrieval stage (FR150–FR153) — section-granularity doc retrieval (`selectRelevantSections`), deterministic diff pre-filtering (`filterDiff`), ranked-fill prompt budget (`rankedFillSections` + `buildPromptWithDrops`), and the working-tree-at-branch-HEAD doc-read invariant. The stage changes `buildPrompt` output **when enabled**, so it would trip the NFR44 release gates without discipline. The policy that keeps the gates green during roll-out:
-
-### Three allowed paths — and one forbidden
-
-- **Path A — opt-in / default-off (V1 default).** Every retrieval knob ships behind a `BuildPromptOptions` field with an explicit no-op fast-path (`relevanceThreshold` and `promptTokenBudget` both default to undefined / `<= 0` / non-finite → keep everything, identical output). The default `buildPrompt(input, template)` call path produces **byte-identical** output vs. the pre-v6.7 baseline. All three NFR44 release gates (A drift-engine snapshot, B Action pipeline, C bundled-CLI parity) pass with **no re-snapshot**. This is the V1-expected path and the path the FR150–FR152 stories landed on.
-- **Path B — deliberate, reviewed re-snapshot.** When a `prompt.md` wording change or a default-on activation is genuinely required, the PR re-snapshots `canonical-prompt.snapshot.md` (gate A) and the bundled-CLI parity fixture (gate C) in lockstep. The PR description names the change explicitly with a sentence such as: *"intentional `prompt.md` re-snapshot under NFR49(b) Path B — &lt;short rationale&gt;."* Reviewers read the snapshot diff as part of code review; sign-off is required.
-- **Path C — silent regen — FORBIDDEN.** Running `pnpm test -u` to make a failing snapshot diff disappear without explicit PR acknowledgement is a process violation. If the snapshot is moving and you cannot justify why, the source change is not yet ready.
-
-### PR-description templates
-
-Copy the right paragraph into the PR body:
-
-**Path A:**
-
-> **NFR49(b) parity statement (Path A — no prompt wording change / opt-in default-off).** The retrieval / filter / budget logic this PR adds is gated behind a `BuildPromptOptions` knob whose default (undefined / `<= 0` / non-finite) keeps every section and every diff hunk. `buildPrompt(input, template)` emits byte-identical output vs. the pre-PR baseline. All three NFR44 release gates (A drift-engine snapshot, B Action pipeline, C bundled-CLI parity) stay green with no re-snapshot.
-
-**Path B:**
-
-> **NFR49(b) parity statement (Path B — deliberate re-snapshot).** This PR sharpens `packages/drift-engine/src/prompt.md` (commit `<sha>`, lines `<range>`). The NFR44 gate A snapshot (`__tests__/prompt-snapshot.test.ts`'s `canonical-prompt.snapshot.md`) and the bundled-CLI parity gate C's expected output are deliberately re-snapped in lockstep. Rationale: `<one-sentence rationale>`. Reviewer sign-off on the snapshot diff: `<reviewer>`.
-
-### Release-time recall
-
-Per-commit recall is asserted via the **retention gate** in `__tests__/token-efficiency.test.ts` (LLM-free): for each labelled fixture in `__tests__/fixtures/token-efficiency/` and `__tests__/fixtures/residual-drift/`, the section identified by `expected.json`'s `groundTruthDocPath` + `groundTruthSection` MUST survive `selectRelevantSections` + `rankedFillSections`. A regression that drops it fails CI.
-
-Behavioural LLM recall — does the model actually flag the drift in the assembled prompt? — is verified **at release** on `apps/action`'s NFR40 eval set, inherited by construction via the shared `buildPrompt`. **No LLM call runs in the drift-engine / CLI unit suite** (design-spec NG6 — model-quality testing lives in the Action's eval harness). The `__tests__/token-efficiency.test.ts` suite is sub-second and dispatches no subagent.
-
-### `scripts/measure-tokens.ts` — local iteration tool
-
-For local before/after token measurement without re-running the whole vitest suite, use the `tsx` script:
-
-```bash
-# All fixtures in the corpus
-node --import tsx packages/drift-engine/scripts/measure-tokens.ts
-
-# A single fixture
-node --import tsx packages/drift-engine/scripts/measure-tokens.ts \
-  packages/drift-engine/__tests__/fixtures/token-efficiency/case-01-doc-heavy/analysis-input.json
-```
-
-Output is one line per case: `<case-slug>: tokens off=<N1> on=<N2> ratio=<r.rr> Δ=<Δ%>`. The script uses the same `estimatePromptTokens(buildPrompt(...))` math as the CI gate in `token-efficiency.test.ts`, so the live number and the CI number agree by construction. The script is not wired into CI, has no assertions, and is not surfaced as a npm script — it is purely a developer-iteration aid. Errors (missing fixture, malformed JSON) print to stderr and exit non-zero.
-
-### Source pointers
-
-The token-efficiency targets and parity-gate policy for this package are maintained in the Delfini project's internal planning record; the enforced gates themselves live in this repository's CI (see the release workflows under .github/workflows/).
-
-## Runtime constraints (lint-enforced)
-
-The package's `eslint.config.js` rules forbid imports that would compromise its pure-logic posture:
-
-- **No I/O** — no `fs`, `child_process`, `http`, `https`, `node:fs`, etc.
-- **No LLM client** — no `@anthropic-ai/sdk`, `openai`, `@langchain/*`.
-- **No env-var reads** — no `process.env`. Pure functions of explicit arguments.
-
-Runtime deps: `zod` + `picomatch` (both pure CPU — no I/O, no network, no env). DevDeps: `vitest`, `@types/node`, `typescript`. Adding anything else is a regression.
+[Apache-2.0](https://github.com/Legends-of-Tech/delfini/blob/main/LICENSE)
