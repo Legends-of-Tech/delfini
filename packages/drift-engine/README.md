@@ -1,5 +1,8 @@
 # @delfini/drift-engine
 
+[![npm version](https://img.shields.io/npm/v/@delfini/drift-engine?logo=npm)](https://www.npmjs.com/package/@delfini/drift-engine)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/Legends-of-Tech/delfini/blob/main/LICENSE)
+
 The pure-logic analysis core behind [Delfini](https://github.com/Legends-of-Tech/delfini) — the tool that detects when a code change has made your documentation wrong and proposes the fix.
 
 This package is the brain, with none of the plumbing. Given a diff and a set of documents, it builds the analysis prompt, defines the schema the model must answer in, and reconciles the model's output back to exact line numbers. It is shared by both Delfini surfaces — the **Skill** (local, `@delfini/cli`) and the **Action** (CI) — so the analysis is identical wherever it runs. A finding surfaced locally is the same finding the Action would surface on the eventual PR.

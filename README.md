@@ -1,5 +1,10 @@
 # Delfini
 
+[![@delfini/cli](https://img.shields.io/npm/v/@delfini/cli?label=%40delfini%2Fcli&logo=npm)](https://www.npmjs.com/package/@delfini/cli)
+[![@delfini/drift-engine](https://img.shields.io/npm/v/@delfini/drift-engine?label=%40delfini%2Fdrift-engine&logo=npm)](https://www.npmjs.com/package/@delfini/drift-engine)
+[![@delfini/action-core](https://img.shields.io/npm/v/@delfini/action-core?label=%40delfini%2Faction-core&logo=npm)](https://www.npmjs.com/package/@delfini/action-core)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+
 **Delfini detects when a code change has made your documentation wrong — and proposes the one-click fix.**
 
 When a pull request's diff contradicts something the docs claim, Delfini flags it and hands you a concrete edit: the exact file, the exact lines, and the replacement text. A developer or reviewer approves it, and the doc fix lands on the same branch as the code change.

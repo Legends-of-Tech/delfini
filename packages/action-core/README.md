@@ -1,5 +1,8 @@
 # @delfini/action-core
 
+[![npm version](https://img.shields.io/npm/v/@delfini/action-core?logo=npm)](https://www.npmjs.com/package/@delfini/action-core)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/Legends-of-Tech/delfini/blob/main/LICENSE)
+
 The shared pipeline core of the [Delfini](https://github.com/Legends-of-Tech/delfini) GitHub Action.
 
 [Delfini](https://github.com/Legends-of-Tech/delfini) detects when a code change has made your documentation wrong. This package holds the parts of the Action's CI pipeline that are identical across both Action editions — the standalone open-source action and the hosted-platform-paired action — so they share one tested implementation:

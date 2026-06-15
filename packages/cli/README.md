@@ -1,5 +1,8 @@
 # @delfini/cli
 
+[![npm version](https://img.shields.io/npm/v/@delfini/cli?logo=npm)](https://www.npmjs.com/package/@delfini/cli)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/Legends-of-Tech/delfini/blob/main/LICENSE)
+
 The command-line companion for the **Delfini Skill** — local documentation-drift detection inside your coding agent ([Claude Code](https://claude.com/claude-code)).
 
 [Delfini](https://github.com/Legends-of-Tech/delfini) detects when a code change has made your docs wrong and proposes the one-click fix. The Skill is the way to run that check *before you open a PR*, right in your editor. The CLI is deterministic and **never calls an LLM itself** — your coding agent does the analysis with its own tokens, which is why the Skill costs your team nothing new: no Delfini account, no API key, no GitHub App.
