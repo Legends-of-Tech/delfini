@@ -14,12 +14,12 @@ import simpleGit from 'simple-git'
 import {
   InstallToolNotSupportedError,
   RepoRootNotFoundError,
-  readDocScope,
+  readConfig,
   runInstall,
 } from '../src/index.js'
 import { parseScopeInput, parseYesNo } from '../src/commands/install.js'
 
-const DOC_SCOPE_REL = join('.claude', 'skills', 'delfini', 'doc-scope.json')
+const DOC_SCOPE_REL = join('.claude', 'skills', 'delfini', 'delfini-config.json')
 
 const OPEN_MARKER = '<!-- delfini:auto-invoke-block-v1 -->'
 const CLOSE_MARKER = '<!-- /delfini:auto-invoke-block-v1 -->'
@@ -662,8 +662,8 @@ describe('runInstall — doc-scope.json seeding via provideDocScope', () => {
       provideDocScope: scope(['docs/', 'specs/architecture.md']),
     })
     expect(existsSync(join(repoRoot, DOC_SCOPE_REL))).toBe(true)
-    const parsed = await readDocScope(repoRoot)
-    expect(parsed).toEqual({ version: 1, doc_scope: ['docs', 'specs/architecture.md'] })
+    const parsed = await readConfig(repoRoot)
+    expect(parsed).toEqual({ version: 1, doc_scope: ['docs', 'specs/architecture.md'], ignore_code_scope: [] })
   })
 
   it('does not write doc-scope.json when the list is empty (no-op)', async () => {
@@ -671,7 +671,7 @@ describe('runInstall — doc-scope.json seeding via provideDocScope', () => {
     await runInstall(repoRoot, { logger, provideDocScope: scope([]) })
     expect(existsSync(join(repoRoot, DOC_SCOPE_REL))).toBe(false)
     const allLogs = logger.log.mock.calls.map((c) => c.join(' ')).join('\n')
-    expect(allLogs).toMatch(/doc-scope\.json/)
+    expect(allLogs).toMatch(/delfini-config\.json/)
     expect(allLogs).toMatch(/no paths provided/i)
   })
 
@@ -680,8 +680,8 @@ describe('runInstall — doc-scope.json seeding via provideDocScope', () => {
       logger: makeLogger(),
       provideDocScope: scope(['docs/', '  ', '']),
     })
-    const parsed = await readDocScope(repoRoot)
-    expect(parsed).toEqual({ version: 1, doc_scope: ['docs'] })
+    const parsed = await readConfig(repoRoot)
+    expect(parsed).toEqual({ version: 1, doc_scope: ['docs'], ignore_code_scope: [] })
   })
 
   it('overwrites an existing scope when --scope/seam is given (explicit intent)', async () => {
@@ -690,8 +690,8 @@ describe('runInstall — doc-scope.json seeding via provideDocScope', () => {
       logger: makeLogger(),
       provideDocScope: scope(['specs/', 'README.md']),
     })
-    const parsed = await readDocScope(repoRoot)
-    expect(parsed).toEqual({ version: 1, doc_scope: ['specs', 'README.md'] })
+    const parsed = await readConfig(repoRoot)
+    expect(parsed).toEqual({ version: 1, doc_scope: ['specs', 'README.md'], ignore_code_scope: [] })
   })
 
   it('warn-and-skips an invalid path (escape) without aborting the scaffold', async () => {
@@ -706,7 +706,7 @@ describe('runInstall — doc-scope.json seeding via provideDocScope', () => {
     expect(existsSync(join(repoRoot, '.claude', 'skills', 'delfini', 'SKILL.md'))).toBe(true)
     expect(existsSync(join(repoRoot, '.gitignore'))).toBe(true)
     const allLogs = logger.log.mock.calls.map((c) => c.join(' ')).join('\n')
-    expect(allLogs).toMatch(/doc-scope\.json.*skipped/i)
+    expect(allLogs).toMatch(/delfini-config\.json.*skipped/i)
   })
 })
 
@@ -735,8 +735,8 @@ describe('runInstall — doc-scope.json default (no seam) behaviour', () => {
     await runInstall(repoRoot, { logger: makeLogger(), provideDocScope: scope(['docs/']) })
     const logger = makeLogger()
     await runInstall(repoRoot, { logger })
-    const parsed = await readDocScope(repoRoot)
-    expect(parsed).toEqual({ version: 1, doc_scope: ['docs'] })
+    const parsed = await readConfig(repoRoot)
+    expect(parsed).toEqual({ version: 1, doc_scope: ['docs'], ignore_code_scope: [] })
     const allLogs = logger.log.mock.calls.map((c) => c.join(' ')).join('\n')
     expect(allLogs).toMatch(/already configured/i)
   })

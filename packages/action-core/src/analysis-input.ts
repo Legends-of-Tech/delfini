@@ -82,6 +82,13 @@ type DropReasonKey =
   | 'fixture'
   | 'whitespace-only'
   | 'import-only'
+  // `ignored` (user ignore_code_scope) is in the engine's DropReason union, so
+  // it must be representable here for the type to line up. The Lite pipeline
+  // applies ignore by FILTERING the changed-file array before the diff is built
+  // (apps/action/src/lite-pipeline.ts), NOT by passing ignorePaths to
+  // `filterDiff`, so this counter never actually sees an `ignored` drop — it is
+  // always 0 on the Action path and is not rendered in the summary line below.
+  | 'ignored'
 
 function countByReason(reasons: DropReasonKey[]): Record<DropReasonKey, number> {
   const out: Record<DropReasonKey, number> = {
@@ -91,6 +98,7 @@ function countByReason(reasons: DropReasonKey[]): Record<DropReasonKey, number> 
     fixture: 0,
     'whitespace-only': 0,
     'import-only': 0,
+    ignored: 0,
   }
   for (const r of reasons) out[r]++
   return out

@@ -5,7 +5,7 @@
 //      upgrade path per architecture.md L1142)
 //   2. interactively asks "Which docs should Delfini track?" and, when the
 //      user supplies one or more paths, persists them to
-//      `.claude/skills/delfini/doc-scope.json` via the shared `writeDocScope`
+//      `.claude/skills/delfini/delfini-config.json` via the shared `writeDocScope`
 //      primitive. Skips silently when a scope is already configured (never
 //      clobbers the committed, team-shared file), when the answer is blank,
 //      or on a non-TTY stdin — in every skip case the SKILL.md first-run
@@ -40,11 +40,11 @@ import { createInterface } from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
 
 import {
-  DOC_SCOPE_RELATIVE_PATH,
-  DocScopeValidationError,
-  docScopeExists,
+  DELFINI_CONFIG_RELATIVE_PATH,
+  ConfigValidationError,
+  configExists,
   writeDocScope,
-} from '../doc-scope.js'
+} from '../config.js'
 import { getRepoRoot } from '../git.js'
 import { appendToGitignore } from '../trace.js'
 
@@ -71,11 +71,11 @@ export interface RunInstallOptions {
   /**
    * Resolves the doc-scope path list. When provided, `runInstall` uses it
    * directly (the `--scope` CLI flag and the test seam) and never prompts —
-   * a non-empty list is persisted to `doc-scope.json` (overwriting any
+   * a non-empty list is persisted to `delfini-config.json` doc_scope (overwriting any
    * existing file, since an explicit `--scope` is intent-to-overwrite); an
    * empty list is a no-op. When omitted, `runInstall` prompts interactively
-   * on a TTY only if no `doc-scope.json` exists yet; on a non-TTY stdin, or
-   * when a scope is already configured, it leaves `doc-scope.json` untouched.
+   * on a TTY only if no config exists yet; on a non-TTY stdin, or
+   * when a scope is already configured, it leaves the config untouched.
    * Invalid paths (rejected by `writeDocScope`) warn-and-skip — the scaffold
    * always completes; the SKILL.md first-run prompt re-seeds the scope later.
    */
@@ -186,14 +186,14 @@ async function applyDocScope(
   logger: InstallLogger,
   provideDocScope?: () => Promise<string[]>,
 ): Promise<void> {
-  const target = join(repoRoot, DOC_SCOPE_RELATIVE_PATH)
+  const target = join(repoRoot, DELFINI_CONFIG_RELATIVE_PATH)
 
   // Explicit scope (`--scope` flag or test seam): write/overwrite. An empty
   // list is a deliberate no-op rather than an error.
   if (provideDocScope) {
     const paths = sanitiseScope(await provideDocScope())
     if (paths.length === 0) {
-      log(logger, `doc-scope.json → ${target} (no paths provided, no change)`)
+      log(logger, `delfini-config.json → ${target} (no paths provided, no change)`)
       return
     }
     await persistDocScope(repoRoot, logger, target, paths)
@@ -201,8 +201,8 @@ async function applyDocScope(
   }
 
   // No explicit scope. Never clobber an existing committed, team-shared scope.
-  if (await docScopeExists(repoRoot)) {
-    log(logger, `doc-scope.json → ${target} (already configured, no change)`)
+  if (await configExists(repoRoot)) {
+    log(logger, `delfini-config.json → ${target} (already configured, no change)`)
     return
   }
 
@@ -211,7 +211,7 @@ async function applyDocScope(
   if (!process.stdin.isTTY) {
     log(
       logger,
-      `doc-scope.json → ${target} (non-interactive shell: scope prompt skipped, no change)`,
+      `delfini-config.json → ${target} (non-interactive shell: scope prompt skipped, no change)`,
     )
     return
   }
@@ -220,7 +220,7 @@ async function applyDocScope(
   if (paths.length === 0) {
     log(
       logger,
-      `doc-scope.json → ${target} (no paths provided, no change — first /delfini run will prompt)`,
+      `delfini-config.json → ${target} (no paths provided, no change — first /delfini run will prompt)`,
     )
     return
   }
@@ -253,13 +253,13 @@ async function persistDocScope(
     // Delegate validation + normalisation + write to the shared primitive.
     // Pass repoRoot so writeDocScope does not re-run getRepoRoot().
     await writeDocScope(paths, { repoRoot })
-    log(logger, `doc-scope.json → ${target} (wrote ${paths.length} path(s))`)
+    log(logger, `delfini-config.json → ${target} (wrote ${paths.length} path(s))`)
   } catch (err) {
-    if (err instanceof DocScopeValidationError) {
+    if (err instanceof ConfigValidationError) {
       // Warn-and-skip: a bad path must not abort the rest of the scaffold.
       log(
         logger,
-        `doc-scope.json → ${target} (skipped — ${err.message}). ` +
+        `delfini-config.json → ${target} (skipped — ${err.message}). ` +
           `Fix the path(s) and re-run \`delfini install\`, edit the file directly, ` +
           `or set the scope on the first /delfini run.`,
       )

@@ -26,6 +26,16 @@ export interface PipelineInputs {
   // `string[]`-shaped call site — a type-shim that preserves byte-identical
   // Full-mode behaviour.
   docScope: string[]
+  /**
+   * `ignore_code_scope` — code paths whose CHANGES are ignored for analysis. A
+   * changed file matching any entry (dir / file / picomatch glob, same dialect
+   * as `docScope`) is dropped before smart-skip and before the analysis diff.
+   * Default `[]` (ignore nothing) — unlike `docScope`, there is NO `docs/`-style
+   * fallback: an empty/omitted input means exactly "ignore no code paths".
+   * Optional in the type so minimal test fixtures keep compiling (mirrors
+   * `enableDiffPreFilter`); `readPipelineInputs` always sets it explicitly.
+   */
+  ignoreCodeScope?: string[]
   enforcement: Enforcement
   githubToken: string
   /**
@@ -76,6 +86,16 @@ export function readPipelineInputs(): PipelineInputs {
   // trailing-slash inconsistency between the two default routes.
   const docScope = normalized.length > 0 ? normalized : normalizeDocScope(['docs/'])
 
+  // `ignore_code_scope` — same delimited-list parsing + normalizeDocScope as
+  // doc_scope (one dialect, ADR-2026-06-01), but NO default fallback: an
+  // omitted or empty input normalises to `[]` (ignore nothing). A non-empty
+  // input that collapses to nothing under normalisation is simply empty too —
+  // "ignore nothing" is a safe outcome here (no PR is silently skipped by it),
+  // so unlike doc_scope it needs no collapse-to-default warning.
+  const rawIgnoreCodeScope = core.getInput('ignore_code_scope')
+  const ignoreCodeScope =
+    rawIgnoreCodeScope.length > 0 ? normalizeDocScope(rawIgnoreCodeScope.split(/[\n,]/)) : []
+
   const rawEnforcement = (core.getInput('enforcement') || 'warning').toLowerCase()
   const enforcement: Enforcement = rawEnforcement === 'required' ? 'required' : 'warning'
   const githubToken = process.env.GITHUB_TOKEN ?? core.getInput('github_token')
@@ -84,5 +104,5 @@ export function readPipelineInputs(): PipelineInputs {
   // the gate off so the pre-story behaviour is the path of least resistance.
   const enableDiffPreFilter = core.getInput('enable_diff_prefilter').toLowerCase() === 'true'
 
-  return { docScope, enforcement, githubToken, enableDiffPreFilter }
+  return { docScope, ignoreCodeScope, enforcement, githubToken, enableDiffPreFilter }
 }

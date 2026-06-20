@@ -37,6 +37,15 @@ inputs:
       dialect — e.g. "docs/**/*.md", "packages/*/README.md"). A single bare
       path still works ("docs"). Defaults to "docs/" when omitted.
     required: false
+  ignore_code_scope:
+    description: >
+      Code paths whose CHANGES Delfini ignores during analysis. A changed file
+      matching any entry is dropped before smart-skip and before the analysis
+      diff — treated as if it had not changed. Accepts a newline- or
+      comma-delimited list; each entry may be a directory (whole subtree), a
+      single file, or a glob (picomatch@4 dialect — same as doc_scope, e.g.
+      "src/generated/**", "db/migrations/"). Defaults to empty (ignore nothing).
+    required: false
   enforcement:
     description: >
       "required" blocks merge on FAIL; "warning" is advisory only.

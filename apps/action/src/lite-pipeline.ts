@@ -13,6 +13,7 @@ import {
   readDocsAtHeadViaGitTrees,
 } from '@delfini/action-core'
 import type { PipelineDeps, PipelineInputs, PrContext, SmartSkipResult } from '@delfini/action-core'
+import { isFileInDocScope } from '@delfini/drift-engine'
 import { formatLiteComment } from './lite-comment-formatter.js'
 
 // Lite pipeline (FR135) — standalone local analysis with NO Delfini platform:
@@ -61,11 +62,30 @@ export async function runLitePipeline(
   // comment (AC7). There is deliberately no top-level catch-all: a throw from
   // the catch handler's own emit bubbles to main.ts's `setFailed` wrapper.
   try {
-    const changedFiles = await listChangedFiles(octokit, ctx)
+    const rawChangedFiles = await listChangedFiles(octokit, ctx)
+
+    // Step 3a — ignore_code_scope. Drop changed files the dev marked as
+    // out-of-bounds for drift (same picomatch@4 predicate the CLI config and
+    // the engine use → parity by construction). Filtering the FILE ARRAY once,
+    // here, makes an ignored file uniformly "as if unchanged": it feeds both
+    // smart-skip and the analysis diff. (The CLI achieves the same drop on its
+    // diff string via `filterDiff({ ignorePaths })`; the decision predicate is
+    // identical, only the mechanism differs by diff shape.)
+    const ignoreCodeScope = inputs.ignoreCodeScope ?? []
+    const changedFiles =
+      ignoreCodeScope.length > 0
+        ? rawChangedFiles.filter((file) => !isFileInDocScope(file.filename, ignoreCodeScope))
+        : rawChangedFiles
+    const ignoredCount = rawChangedFiles.length - changedFiles.length
+    if (ignoredCount > 0) {
+      core.info(`Lite: ignored ${ignoredCount} changed file(s) via ignore_code_scope.`)
+    }
+
     const changedPaths = changedFiles.map((file) => file.filename)
 
     // Step 4 — smart-skip. Both FR57 legs apply; scope is `inputs.docScope`,
-    // never FR88g. A skip is unconditionally a clean PASS in Lite mode.
+    // never FR88g. A skip is unconditionally a clean PASS in Lite mode. Runs on
+    // the post-ignore file set so a PR touching only ignored code smart-skips.
     const skip = classifyPr(changedPaths, { docScope: inputs.docScope })
     if (skip.shouldSkip) {
       core.info(`Lite: smart-skipped — ${skip.reason}`)

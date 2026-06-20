@@ -6,7 +6,7 @@ import os from 'node:os'
 import { Writable } from 'node:stream'
 import simpleGit, { type SimpleGit } from 'simple-git'
 
-import { writeDocScope } from '../src/doc-scope.js'
+import { writeDocScope } from '../src/config.js'
 import {
   PROMPT_TOKEN_BUDGET,
   runLocalPrepare,
@@ -158,7 +158,7 @@ describe('runLocalPrepare — --scope override (AC3)', () => {
   it('overrides persisted scope without modifying doc-scope.json', async () => {
     // Seed persisted scope with one entry.
     await writeDocScope(['docs/'], { repoRoot: repo.root })
-    const scopePath = path.join(repo.root, '.claude', 'skills', 'delfini', 'doc-scope.json')
+    const scopePath = path.join(repo.root, '.claude', 'skills', 'delfini', 'delfini-config.json')
     const before = readFileSync(scopePath, 'utf8')
 
     const code = await runLocalPrepare({
@@ -719,15 +719,15 @@ describe('runLocalPrepare — race-during-read graceful skip (code-review M2)', 
     // confirms exists (via expandDocScope's directory walk) and then
     // remove it before fs.readFile runs.
     //
-    // We use a custom seam: monkey-patch fs.readFile to simulate ENOENT
-    // on the second call. Avoids racing the actual filesystem.
+    // We use a custom seam: monkey-patch fs.readFile to simulate ENOENT for
+    // one specific doc (`b.md`), as if it were deleted between expand and
+    // read. Targeting the doc path (not a call index) keeps the test robust to
+    // unrelated fs.readFile calls earlier in the run — e.g. readConfig reading
+    // delfini-config.json before readDocs.
     const realReadFile = fs.readFile
-    let callIndex = 0
     const fsAny = fs as unknown as { readFile: typeof realReadFile }
     fsAny.readFile = (async (p: string, enc?: BufferEncoding) => {
-      callIndex += 1
-      if (callIndex === 1) {
-        // First call: simulate ENOENT (race-induced delete).
+      if (typeof p === 'string' && p.endsWith('b.md')) {
         const err = new Error(`ENOENT: simulated race`) as NodeJS.ErrnoException
         err.code = 'ENOENT'
         throw err

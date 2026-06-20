@@ -41,15 +41,28 @@ If `delfini` is not on PATH:
 3. On `y` → run `npm i -g @delfini/cli`, then re-verify with `delfini --version`.
 4. On `n` or on install failure → fall back to `npx @delfini/cli` for the rest of this session. Substitute `npx @delfini/cli` for every `delfini` invocation in the remaining steps.
 
-## Load doc-scope
+## Load config
 
-Read `.claude/skills/delfini/doc-scope.json`.
+Read `.claude/skills/delfini/delfini-config.json` (the committed, team-shared Delfini config). For repos set up before the rename, also accept a legacy `.claude/skills/delfini/doc-scope.json` — the CLI reads it as a fallback and migrates it to `delfini-config.json` on the next config write.
+
+The config shape (v1) is:
+
+```json
+{
+  "version": 1,
+  "doc_scope": ["docs/", "packages/*/README.md"],
+  "ignore_code_scope": ["src/generated/**", "db/migrations/"]
+}
+```
+
+- `doc_scope` — the source-of-truth docs Delfini analyses (directories scanned recursively for `.md`, single files, or globs).
+- `ignore_code_scope` — **optional.** Code paths whose CHANGES Delfini ignores: a changed file matching any entry (directory, file, or glob — same dialect as `doc_scope`) is dropped from the analysed diff, as if it had not changed. Omit it (or leave it empty) to analyse all changed code.
 
 If the file exists, parse it and continue.
 
-If the file is missing AND the user did not pass `--scope <paths>` to `/delfini`, prompt the user in a single turn:
+If no config exists AND the user did not pass `--scope <paths>` to `/delfini`, prompt the user in a single turn:
 
-> "No `doc-scope.json` found. Which docs should Delfini analyse? Provide one or more paths — directories (recursive `.md` scan), single files, or globs. Example: `docs/ specs/architecture.md packages/*/README.md`."
+> "No `delfini-config.json` found. Which docs should Delfini analyse? Provide one or more paths — directories (recursive `.md` scan), single files, or globs. Example: `docs/ specs/architecture.md packages/*/README.md`."
 
 Validate each path the user supplies:
 
@@ -57,9 +70,9 @@ Validate each path the user supplies:
 - Reject any path that resolves outside the repo root.
 - For non-existent paths, warn the user but keep the path in scope (a teammate may have deleted a file in a different branch).
 
-Write the validated scope to `.claude/skills/delfini/doc-scope.json` in the shape `{"version": 1, "doc_scope": [<paths>]}`. The file is committed to git — team-shared by construction.
+Write the validated scope to `.claude/skills/delfini/delfini-config.json` in the shape `{"version": 1, "doc_scope": [<paths>]}`. The file is committed to git — team-shared by construction. (`ignore_code_scope` is configured by hand-editing this file; the first-run prompt only seeds `doc_scope`.)
 
-If the user passed `--scope <paths>` to `/delfini`, run that invocation against the override list without touching the persisted file.
+If the user passed `--scope <paths>` to `/delfini`, run that invocation against the override list without touching the persisted file. Likewise `--ignore-code-scope <paths>` overrides `ignore_code_scope` for a single run without modifying the file.
 
 ## Resolve the diff source
 
@@ -100,7 +113,7 @@ Run `delfini local-prepare --diff-source <resolved>` (the value resolved in "Res
 
 Branch on non-zero exit codes:
 
-- **Exit `2` (no doc-scope set AND no `--scope` provided)** → fall back to the "Load doc-scope" first-run prompt, write `doc-scope.json`, then re-run `delfini local-prepare --diff-source <resolved>`.
+- **Exit `2` (no doc-scope set AND no `--scope` provided)** → fall back to the "Load config" first-run prompt, write `delfini-config.json`, then re-run `delfini local-prepare --diff-source <resolved>`.
 - **Exit `4` (non-doc prompt payload exceeds budget — diff + schema + instructions alone do not fit, or no doc section fits after ranked-fill)** → surface two options to the user:
   1. Re-invoke with a narrower scope: `/delfini --scope <narrower-paths>`.
   2. Split the PR into smaller changes.

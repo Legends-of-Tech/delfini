@@ -1,7 +1,8 @@
 // `delfini local-prepare` — the input-assembly half of the skill protocol.
 //
 // Deterministic, never calls an LLM. Steps:
-//   1. Resolve effective doc-scope (--scope override vs persisted doc-scope.json)
+//   1. Resolve effective doc-scope + ignore_code_scope (--scope /
+//      --ignore-code-scope overrides vs persisted delfini-config.json)
 //   2. Expand each scope entry via expandDocScope() (P3.2.5 primitive)
 //   3. Compute diff via simple-git against --base (default merge-base HEAD origin/main)
 //   4. Read each in-scope doc from disk
@@ -41,7 +42,8 @@ import type {
   PRMetadata,
 } from '@delfini/drift-engine'
 
-import { expandDocScope, readDocScope } from '../doc-scope.js'
+import { expandDocScope, readConfig } from '../config.js'
+import type { DelfiniConfig } from '../config.js'
 import { getRepoRoot, listUntrackedFiles, resolveBaseRef } from '../git.js'
 import { ensureTraceDir, writeTraceFile } from '../trace.js'
 
@@ -151,10 +153,18 @@ function loadTemplate(): string {
 export interface RunLocalPrepareOptions {
   /**
    * The `--scope <paths>` value. Accepts a comma-separated string OR a string[].
-   * When provided, overrides the persisted `.claude/skills/delfini/doc-scope.json`
+   * When provided, overrides the persisted `delfini-config.json` doc_scope
    * WITHOUT modifying that file (FR144 per-run override invariant).
    */
   scope?: string | string[]
+  /**
+   * The `--ignore-code-scope <paths>` value. Accepts a comma-separated string
+   * OR a string[]. When provided, overrides the persisted `delfini-config.json`
+   * `ignore_code_scope` WITHOUT modifying that file (per-run override). Changed
+   * files matching any entry are dropped from the analysed diff. Empty/omitted
+   * → use the persisted `ignore_code_scope` (or none).
+   */
+  ignoreCodeScope?: string | string[]
   /**
    * The `--base <ref>` value. When provided, used as the diff base directly.
    * When omitted, defaults to `git merge-base HEAD origin/main`.
@@ -239,15 +249,24 @@ export async function runLocalPrepare(options: RunLocalPrepareOptions = {}): Pro
   }
   const repoRoot = options.repoRoot ?? (await getRepoRoot())
 
-  // 1. Resolve effective scope: --scope override OR persisted doc-scope.json.
-  const scopePaths = await resolveScopePaths(options.scope, repoRoot)
+  // Read the persisted config once (delfini-config.json, or legacy
+  // doc-scope.json fallback). Both doc_scope and ignore_code_scope come from
+  // here unless the per-run override flags are supplied.
+  const config = await readConfig(repoRoot)
+
+  // 1. Resolve effective doc scope: --scope override OR persisted doc_scope.
+  const scopePaths = resolveScopePaths(options.scope, config)
   if (scopePaths === null) {
     stderr.write(
       'No doc-scope configured. Pass `--scope <paths>` or run the skill\n' +
-        'first-run setup to create `.claude/skills/delfini/doc-scope.json`.\n',
+        'first-run setup to create `.claude/skills/delfini/delfini-config.json`.\n',
     )
     return 2
   }
+
+  // 1a. Resolve effective ignore_code_scope: --ignore-code-scope override OR
+  //     persisted ignore_code_scope (empty when neither is set).
+  const ignoreCodeScope = resolveIgnoreCodeScope(options.ignoreCodeScope, config)
 
   // 2. Expand scope entries (directories → recursive .md, files → file,
   //    globs → tinyglobby). Warn-and-continue on missing paths (NFR47 mode 6).
@@ -261,14 +280,21 @@ export async function runLocalPrepare(options: RunLocalPrepareOptions = {}): Pro
   const baseRef = await resolveBaseRef(git, options.base, stderr)
   const rawDiff = await computeDiff(git, repoRoot, baseRef, diffSource)
 
-  // 3a. Story P3.7.2 / FR151 — optional deterministic diff pre-filter. Gated
-  //     so the default path keeps the assembled `analysis-input.json` /
-  //     `analysis-prompt.md` bytes identical (NFR49(b) parity). When on, the
-  //     dropped-paths / dropped-hunks record is stashed for the trace write.
+  // 3a. Story P3.7.2 / FR151 — deterministic diff pre-filter + user
+  //     ignore_code_scope. Gated so the default path (no prefilter, no ignore)
+  //     keeps the assembled `analysis-input.json` / `analysis-prompt.md` bytes
+  //     identical (NFR49(b) parity). The filter runs when EITHER the built-in
+  //     prefilter is on OR an ignore_code_scope is configured; the
+  //     dropped-paths / dropped-hunks record (including any `ignored` drops) is
+  //     stashed for the trace write.
   let diff = rawDiff
   let filterResult: FilterDiffResult | null = null
-  if (options.enableDiffPreFilter === true) {
-    filterResult = filterDiff(rawDiff)
+  const enableBuiltins = options.enableDiffPreFilter === true
+  if (enableBuiltins || ignoreCodeScope.length > 0) {
+    filterResult = filterDiff(rawDiff, {
+      builtins: enableBuiltins,
+      ignorePaths: ignoreCodeScope,
+    })
     diff = filterResult.keptDiff
   }
 
@@ -367,13 +393,14 @@ export async function runLocalPrepare(options: RunLocalPrepareOptions = {}): Pro
 // -- Scope resolution --------------------------------------------------------
 
 /**
- * Returns the effective scope-paths array, or null if no scope is configured
- * (signals exit 2 — NFR47 mode 5).
+ * Returns the effective doc-scope-paths array, or null if no scope is
+ * configured (signals exit 2 — NFR47 mode 5). `config` is the already-read
+ * persisted config (null when none exists).
  */
-async function resolveScopePaths(
+function resolveScopePaths(
   scopeOption: RunLocalPrepareOptions['scope'],
-  repoRoot: string,
-): Promise<string[] | null> {
+  config: DelfiniConfig | null,
+): string[] | null {
   if (scopeOption !== undefined) {
     const normalised = normaliseScopeOption(scopeOption)
     // Defensive: `--scope ""` or `--scope ", , "` reduce to an empty array
@@ -387,15 +414,29 @@ async function resolveScopePaths(
     return normalised
   }
 
-  const persisted = await readDocScope(repoRoot)
-  if (persisted === null) {
+  if (config === null) {
     return null
   }
-  // Defensive: the doc-scope primitive guarantees non-empty entries via
-  // its Zod schema (z.string().min(1)), but treat an empty array as
-  // "configured but empty" — still proceed (yields zero docs, may yield
-  // zero findings — that's the user's choice).
-  return persisted.doc_scope
+  // Defensive: the config primitive guarantees non-empty entries via its Zod
+  // schema (z.string().min(1)), but treat an empty array as "configured but
+  // empty" — still proceed (yields zero docs, may yield zero findings — that's
+  // the user's choice).
+  return config.doc_scope
+}
+
+/**
+ * Returns the effective `ignore_code_scope` array: the `--ignore-code-scope`
+ * override when supplied, else the persisted `ignore_code_scope`, else empty.
+ * Empty means "ignore nothing" — the observable no-op default.
+ */
+function resolveIgnoreCodeScope(
+  ignoreOption: RunLocalPrepareOptions['ignoreCodeScope'],
+  config: DelfiniConfig | null,
+): string[] {
+  if (ignoreOption !== undefined) {
+    return normaliseScopeOption(ignoreOption)
+  }
+  return config?.ignore_code_scope ?? []
 }
 
 function normaliseScopeOption(scope: string | string[]): string[] {
