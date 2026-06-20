@@ -5,21 +5,23 @@ import os from 'node:os'
 import crypto from 'node:crypto'
 
 import {
-  DOC_SCOPE_RELATIVE_PATH,
-  DOC_SCOPE_VERSION,
-  DocScopeCorruptError,
-  DocScopeValidationError,
-  DocScopeVersionMismatchError,
-  deleteDocScope,
-  docScopeExists,
+  DELFINI_CONFIG_RELATIVE_PATH,
+  DELFINI_CONFIG_VERSION,
+  LEGACY_DOC_SCOPE_RELATIVE_PATH,
+  ConfigCorruptError,
+  ConfigValidationError,
+  ConfigVersionMismatchError,
+  configExists,
+  deleteConfig,
   expandDocScope,
-  readDocScope,
+  readConfig,
+  writeConfig,
   writeDocScope,
-} from '../src/doc-scope.js'
+} from '../src/config.js'
 
 // Helper: build a fresh fake repo root under os.tmpdir() per test.
 async function makeTempRepoRoot(): Promise<string> {
-  const root = path.join(os.tmpdir(), `delfini-cli-doc-scope-${crypto.randomUUID()}`)
+  const root = path.join(os.tmpdir(), `delfini-cli-config-${crypto.randomUUID()}`)
   await fs.mkdir(root, { recursive: true })
   // Bare `.git` dir is enough for tests that don't shell out to git — but
   // we don't pass `repoRoot` through `getRepoRoot()` in these tests; we
@@ -31,17 +33,27 @@ async function cleanup(root: string): Promise<void> {
   await fs.rm(root, { recursive: true, force: true })
 }
 
-describe('doc-scope.ts — constants', () => {
-  it('exports the canonical relative path for doc-scope.json', () => {
-    expect(DOC_SCOPE_RELATIVE_PATH).toBe('.claude/skills/delfini/doc-scope.json')
+async function writeRaw(root: string, relPath: string, contents: unknown): Promise<void> {
+  const target = path.join(root, relPath)
+  await fs.mkdir(path.dirname(target), { recursive: true })
+  await fs.writeFile(target, JSON.stringify(contents), 'utf8')
+}
+
+describe('config.ts — constants', () => {
+  it('exports the canonical relative path for delfini-config.json', () => {
+    expect(DELFINI_CONFIG_RELATIVE_PATH).toBe('.claude/skills/delfini/delfini-config.json')
+  })
+
+  it('exports the legacy doc-scope.json path for migration fallback', () => {
+    expect(LEGACY_DOC_SCOPE_RELATIVE_PATH).toBe('.claude/skills/delfini/doc-scope.json')
   })
 
   it('exports the current schema version (1)', () => {
-    expect(DOC_SCOPE_VERSION).toBe(1)
+    expect(DELFINI_CONFIG_VERSION).toBe(1)
   })
 })
 
-describe('readDocScope', () => {
+describe('readConfig', () => {
   let repoRoot: string
 
   beforeEach(async () => {
@@ -52,64 +64,179 @@ describe('readDocScope', () => {
     await cleanup(repoRoot)
   })
 
-  it('returns null when doc-scope.json does not exist', async () => {
-    const result = await readDocScope(repoRoot)
+  it('returns null when no config file exists', async () => {
+    const result = await readConfig(repoRoot)
     expect(result).toBeNull()
   })
 
-  it('returns the parsed v1 schema for a well-formed file', async () => {
-    const target = path.join(repoRoot, DOC_SCOPE_RELATIVE_PATH)
-    await fs.mkdir(path.dirname(target), { recursive: true })
-    await fs.writeFile(
-      target,
-      JSON.stringify({ version: 1, doc_scope: ['docs/', 'README.md'] }),
-      'utf8',
-    )
-
-    const result = await readDocScope(repoRoot)
-    expect(result).toEqual({ version: 1, doc_scope: ['docs/', 'README.md'] })
-  })
-
-  it('throws DocScopeVersionMismatchError (code DOC_SCOPE_VERSION_MISMATCH) when version > 1', async () => {
-    const target = path.join(repoRoot, DOC_SCOPE_RELATIVE_PATH)
-    await fs.mkdir(path.dirname(target), { recursive: true })
-    await fs.writeFile(target, JSON.stringify({ version: 2, doc_scope: ['docs/'] }), 'utf8')
-
-    await expect(readDocScope(repoRoot)).rejects.toMatchObject({
-      code: 'DOC_SCOPE_VERSION_MISMATCH',
-      message: 'your doc-scope.json is for a newer @delfini/cli; please upgrade.',
+  it('returns the parsed v1 schema for a well-formed file, defaulting ignore_code_scope to []', async () => {
+    await writeRaw(repoRoot, DELFINI_CONFIG_RELATIVE_PATH, {
+      version: 1,
+      doc_scope: ['docs/', 'README.md'],
     })
-    await expect(readDocScope(repoRoot)).rejects.toBeInstanceOf(DocScopeVersionMismatchError)
+
+    const result = await readConfig(repoRoot)
+    expect(result).toEqual({
+      version: 1,
+      doc_scope: ['docs/', 'README.md'],
+      ignore_code_scope: [],
+    })
   })
 
-  it('throws DocScopeCorruptError for malformed JSON', async () => {
-    const target = path.join(repoRoot, DOC_SCOPE_RELATIVE_PATH)
+  it('reads ignore_code_scope when present', async () => {
+    await writeRaw(repoRoot, DELFINI_CONFIG_RELATIVE_PATH, {
+      version: 1,
+      doc_scope: ['docs/'],
+      ignore_code_scope: ['src/generated/**', 'db/migrations/'],
+    })
+
+    const result = await readConfig(repoRoot)
+    expect(result).toEqual({
+      version: 1,
+      doc_scope: ['docs/'],
+      ignore_code_scope: ['src/generated/**', 'db/migrations/'],
+    })
+  })
+
+  it('throws ConfigVersionMismatchError (code CONFIG_VERSION_MISMATCH) when version > 1', async () => {
+    await writeRaw(repoRoot, DELFINI_CONFIG_RELATIVE_PATH, { version: 2, doc_scope: ['docs/'] })
+
+    await expect(readConfig(repoRoot)).rejects.toMatchObject({
+      code: 'CONFIG_VERSION_MISMATCH',
+      message: 'your delfini-config.json is for a newer @delfini/cli; please upgrade.',
+    })
+    await expect(readConfig(repoRoot)).rejects.toBeInstanceOf(ConfigVersionMismatchError)
+  })
+
+  it('throws ConfigCorruptError for malformed JSON', async () => {
+    const target = path.join(repoRoot, DELFINI_CONFIG_RELATIVE_PATH)
     await fs.mkdir(path.dirname(target), { recursive: true })
     await fs.writeFile(target, '{ not-valid-json', 'utf8')
 
-    await expect(readDocScope(repoRoot)).rejects.toBeInstanceOf(DocScopeCorruptError)
-    await expect(readDocScope(repoRoot)).rejects.toMatchObject({ code: 'DOC_SCOPE_CORRUPT' })
+    await expect(readConfig(repoRoot)).rejects.toBeInstanceOf(ConfigCorruptError)
+    await expect(readConfig(repoRoot)).rejects.toMatchObject({ code: 'CONFIG_CORRUPT' })
   })
 
-  it('throws DocScopeCorruptError for valid JSON that fails Zod', async () => {
-    const target = path.join(repoRoot, DOC_SCOPE_RELATIVE_PATH)
-    await fs.mkdir(path.dirname(target), { recursive: true })
-    await fs.writeFile(
-      target,
-      JSON.stringify({ version: 1, doc_scope: 'not-an-array' }),
-      'utf8',
-    )
+  it('throws ConfigCorruptError for valid JSON that fails Zod', async () => {
+    await writeRaw(repoRoot, DELFINI_CONFIG_RELATIVE_PATH, {
+      version: 1,
+      doc_scope: 'not-an-array',
+    })
 
-    await expect(readDocScope(repoRoot)).rejects.toBeInstanceOf(DocScopeCorruptError)
+    await expect(readConfig(repoRoot)).rejects.toBeInstanceOf(ConfigCorruptError)
   })
 
   it('accepts an explicit repoRoot parameter and reads from there', async () => {
-    const target = path.join(repoRoot, DOC_SCOPE_RELATIVE_PATH)
-    await fs.mkdir(path.dirname(target), { recursive: true })
-    await fs.writeFile(target, JSON.stringify({ version: 1, doc_scope: ['x'] }), 'utf8')
+    await writeRaw(repoRoot, DELFINI_CONFIG_RELATIVE_PATH, { version: 1, doc_scope: ['x'] })
 
-    const result = await readDocScope(repoRoot)
+    const result = await readConfig(repoRoot)
     expect(result?.doc_scope).toEqual(['x'])
+  })
+
+  // Migration — the pre-rename file is read when the new file is absent.
+  describe('legacy doc-scope.json fallback', () => {
+    it('falls back to a legacy doc-scope.json when delfini-config.json is absent', async () => {
+      await writeRaw(repoRoot, LEGACY_DOC_SCOPE_RELATIVE_PATH, {
+        version: 1,
+        doc_scope: ['docs/'],
+      })
+
+      const result = await readConfig(repoRoot)
+      expect(result).toEqual({ version: 1, doc_scope: ['docs/'], ignore_code_scope: [] })
+    })
+
+    it('prefers delfini-config.json over a legacy doc-scope.json when both exist', async () => {
+      await writeRaw(repoRoot, LEGACY_DOC_SCOPE_RELATIVE_PATH, {
+        version: 1,
+        doc_scope: ['legacy/'],
+      })
+      await writeRaw(repoRoot, DELFINI_CONFIG_RELATIVE_PATH, {
+        version: 1,
+        doc_scope: ['current/'],
+        ignore_code_scope: ['gen/**'],
+      })
+
+      const result = await readConfig(repoRoot)
+      expect(result).toEqual({
+        version: 1,
+        doc_scope: ['current/'],
+        ignore_code_scope: ['gen/**'],
+      })
+    })
+  })
+})
+
+describe('writeConfig', () => {
+  let repoRoot: string
+
+  beforeEach(async () => {
+    repoRoot = await makeTempRepoRoot()
+  })
+
+  afterEach(async () => {
+    await cleanup(repoRoot)
+  })
+
+  it('writes both scopes when supplied', async () => {
+    await writeConfig({ doc_scope: ['docs/'], ignore_code_scope: ['src/generated/**'] }, { repoRoot })
+    const written = await fs.readFile(path.join(repoRoot, DELFINI_CONFIG_RELATIVE_PATH), 'utf8')
+    expect(JSON.parse(written)).toEqual({
+      version: 1,
+      doc_scope: ['docs'],
+      ignore_code_scope: ['src/generated/**'],
+    })
+  })
+
+  it('omits ignore_code_scope from the file when empty (reads back as [])', async () => {
+    await writeConfig({ doc_scope: ['docs/'], ignore_code_scope: [] }, { repoRoot })
+    const written = await fs.readFile(path.join(repoRoot, DELFINI_CONFIG_RELATIVE_PATH), 'utf8')
+    expect(JSON.parse(written)).toEqual({ version: 1, doc_scope: ['docs'] })
+    expect((await readConfig(repoRoot))?.ignore_code_scope).toEqual([])
+  })
+
+  it('preserves an existing ignore_code_scope when only doc_scope is updated', async () => {
+    await writeConfig({ doc_scope: ['docs/'], ignore_code_scope: ['gen/**'] }, { repoRoot })
+    await writeDocScope(['specs/'], { repoRoot })
+
+    const result = await readConfig(repoRoot)
+    expect(result).toEqual({
+      version: 1,
+      doc_scope: ['specs'],
+      ignore_code_scope: ['gen/**'],
+    })
+  })
+
+  it('preserves an existing doc_scope when only ignore_code_scope is updated', async () => {
+    await writeDocScope(['docs/'], { repoRoot })
+    await writeConfig({ ignore_code_scope: ['gen/**'] }, { repoRoot })
+
+    const result = await readConfig(repoRoot)
+    expect(result).toEqual({
+      version: 1,
+      doc_scope: ['docs'],
+      ignore_code_scope: ['gen/**'],
+    })
+  })
+
+  it('normalises ignore_code_scope entries with the shared engine algebra', async () => {
+    await writeConfig(
+      { doc_scope: ['docs/'], ignore_code_scope: ['src//generated/', './build', 'build'] },
+      { repoRoot },
+    )
+    const result = await readConfig(repoRoot)
+    expect(result?.ignore_code_scope).toEqual(['src/generated', 'build'])
+  })
+
+  it('rejects an ignore_code_scope entry that escapes the repo root', async () => {
+    await expect(
+      writeConfig({ doc_scope: ['docs/'], ignore_code_scope: ['../outside/**'] }, { repoRoot }),
+    ).rejects.toThrow(/escapes repo root/)
+  })
+
+  it('throws when the final config would have no doc_scope', async () => {
+    await expect(writeConfig({ ignore_code_scope: ['gen/**'] }, { repoRoot })).rejects.toBeInstanceOf(
+      ConfigValidationError,
+    )
   })
 })
 
@@ -126,7 +253,7 @@ describe('writeDocScope', () => {
 
   it('creates .claude/skills/delfini/ when absent and writes valid v1 JSON', async () => {
     await writeDocScope(['docs/'], { repoRoot })
-    const written = await fs.readFile(path.join(repoRoot, DOC_SCOPE_RELATIVE_PATH), 'utf8')
+    const written = await fs.readFile(path.join(repoRoot, DELFINI_CONFIG_RELATIVE_PATH), 'utf8')
     expect(written.endsWith('\n')).toBe(true)
     // P3.6.1 normalize strengthening: trailing slashes are stripped at write
     // time (not a regression — the engine's normalizeDocScope makes the
@@ -135,35 +262,28 @@ describe('writeDocScope', () => {
   })
 
   it('P3.6.1 normalize strengthening: collapses //, ./ and .. segments at write time (not a regression)', async () => {
-    // The engine's normalizeDocScope runs a real POSIX path normalisation per
-    // entry. Same dedupe rules: first-occurrence order preserved. picomatch
-    // can actually match these canonical forms — the previous CLI passed the
-    // literal strings through to fast-glob, which would silently no-match on
-    // e.g. `docs//api`.
-    await writeDocScope(
-      ['docs//api', './docs', 'docs/sub/../api/*.md'],
-      { repoRoot },
-    )
-    const written = await fs.readFile(path.join(repoRoot, DOC_SCOPE_RELATIVE_PATH), 'utf8')
+    await writeDocScope(['docs//api', './docs', 'docs/sub/../api/*.md'], { repoRoot })
+    const written = await fs.readFile(path.join(repoRoot, DELFINI_CONFIG_RELATIVE_PATH), 'utf8')
     expect(JSON.parse(written)).toEqual({
       version: 1,
       doc_scope: ['docs/api', 'docs', 'docs/api/*.md'],
     })
   })
 
-  it('overwrites an existing file', async () => {
+  it('overwrites an existing doc_scope', async () => {
     await writeDocScope(['docs/'], { repoRoot })
     await writeDocScope(['specs/architecture.md'], { repoRoot })
 
-    const result = await readDocScope(repoRoot)
-    expect(result).toEqual({ version: 1, doc_scope: ['specs/architecture.md'] })
+    const result = await readConfig(repoRoot)
+    expect(result).toEqual({
+      version: 1,
+      doc_scope: ['specs/architecture.md'],
+      ignore_code_scope: [],
+    })
   })
 
-  it('rejects an empty paths array with DocScopeValidationError', async () => {
-    await expect(writeDocScope([], { repoRoot })).rejects.toBeInstanceOf(DocScopeValidationError)
-    await expect(writeDocScope([], { repoRoot })).rejects.toMatchObject({
-      code: 'DOC_SCOPE_VALIDATION',
-    })
+  it('rejects an empty paths array with ConfigValidationError', async () => {
+    await expect(writeDocScope([], { repoRoot })).rejects.toBeInstanceOf(ConfigValidationError)
   })
 
   it('rejects an absolute path with a clear error', async () => {
@@ -192,7 +312,7 @@ describe('writeDocScope', () => {
       await writeDocScope(['../escape1', '/abs/escape2', 'docs/'], { repoRoot })
       throw new Error('expected writeDocScope to throw')
     } catch (err) {
-      expect(err).toBeInstanceOf(DocScopeValidationError)
+      expect(err).toBeInstanceOf(ConfigValidationError)
       const msg = (err as Error).message
       expect(msg).toMatch(/\.\.\/escape1/)
       expect(msg).toMatch(/\/abs\/escape2/)
@@ -202,54 +322,47 @@ describe('writeDocScope', () => {
   })
 
   it('rejects empty-string entries', async () => {
-    await expect(writeDocScope([''], { repoRoot })).rejects.toBeInstanceOf(DocScopeValidationError)
+    await expect(writeDocScope([''], { repoRoot })).rejects.toBeInstanceOf(ConfigValidationError)
   })
 
   it('rejects a glob whose normalised form escapes the repo root (P3.6.1 full-entry normalize)', async () => {
-    // The CLI's previous static-prefix-only check could not see traversal
-    // hidden inside a glob portion — `**/../../x`'s static prefix is empty,
-    // so the old code returned `'.'` and the escape went undetected. The
-    // engine's validateDocScopeEntry normalises the WHOLE entry, so the
-    // collapsed form starts with `..` and the escape is caught.
     await expect(
       writeDocScope(['**/../../escape/*.md'], { repoRoot }),
     ).rejects.toThrow(/escapes repo root/)
   })
 
   it('rejects entries containing ASCII control characters', async () => {
-    await expect(
-      writeDocScope(['docs/foo\nbar.md'], { repoRoot }),
-    ).rejects.toThrow(/control characters/)
+    await expect(writeDocScope(['docs/foo\nbar.md'], { repoRoot })).rejects.toThrow(/control characters/)
   })
 
-  // Review patch (P3.6.2 code review): repo-root tautologies like `.`, `./`,
-  // and `docs/..` pass per-entry validation but collapse to nothing under the
-  // shared dialect. Without an all-collapse guard, writeDocScope would
-  // silently persist `{doc_scope: []}` — a meaningless empty scope with no
-  // error. Guard rejects it, mirroring the empty-array rejection.
   it('rejects when every entry collapses to an empty scope after normalisation', async () => {
-    await expect(writeDocScope(['.'], { repoRoot })).rejects.toBeInstanceOf(
-      DocScopeValidationError,
-    )
+    await expect(writeDocScope(['.'], { repoRoot })).rejects.toBeInstanceOf(ConfigValidationError)
     await expect(writeDocScope(['.'], { repoRoot })).rejects.toThrow(/empty scope/)
-    await expect(writeDocScope(['./', 'docs/..'], { repoRoot })).rejects.toThrow(
-      /empty scope/,
-    )
-    // Confirm NOTHING was persisted (no silent empty doc-scope.json on disk).
-    expect(await docScopeExists(repoRoot)).toBe(false)
+    await expect(writeDocScope(['./', 'docs/..'], { repoRoot })).rejects.toThrow(/empty scope/)
+    // Confirm NOTHING was persisted (no silent empty config on disk).
+    expect(await configExists(repoRoot)).toBe(false)
   })
 
   it('persists surviving entries when only SOME entries collapse (partial collapse is not an error)', async () => {
-    // `docs` survives, `.` collapses out — that is the documented dedupe /
-    // normalize behaviour, not an error. The guard only fires on TOTAL
-    // collapse.
     await writeDocScope(['docs', '.'], { repoRoot })
-    const result = await readDocScope(repoRoot)
-    expect(result).toEqual({ version: 1, doc_scope: ['docs'] })
+    const result = await readConfig(repoRoot)
+    expect(result).toEqual({ version: 1, doc_scope: ['docs'], ignore_code_scope: [] })
+  })
+
+  // Migration — writing emits the new file and removes the legacy one.
+  it('migrates a legacy doc-scope.json: writes delfini-config.json and deletes the legacy file', async () => {
+    await writeRaw(repoRoot, LEGACY_DOC_SCOPE_RELATIVE_PATH, { version: 1, doc_scope: ['old/'] })
+
+    await writeDocScope(['docs/'], { repoRoot })
+
+    const legacy = path.join(repoRoot, LEGACY_DOC_SCOPE_RELATIVE_PATH)
+    await expect(fs.access(legacy)).rejects.toMatchObject({ code: 'ENOENT' })
+    const result = await readConfig(repoRoot)
+    expect(result?.doc_scope).toEqual(['docs'])
   })
 })
 
-describe('docScopeExists', () => {
+describe('configExists', () => {
   let repoRoot: string
 
   beforeEach(async () => {
@@ -261,32 +374,34 @@ describe('docScopeExists', () => {
   })
 
   it('returns false for a fresh repo', async () => {
-    expect(await docScopeExists(repoRoot)).toBe(false)
+    expect(await configExists(repoRoot)).toBe(false)
   })
 
   it('returns true after writeDocScope', async () => {
     await writeDocScope(['docs/'], { repoRoot })
-    expect(await docScopeExists(repoRoot)).toBe(true)
+    expect(await configExists(repoRoot)).toBe(true)
+  })
+
+  it('returns true when only a legacy doc-scope.json exists', async () => {
+    await writeRaw(repoRoot, LEGACY_DOC_SCOPE_RELATIVE_PATH, { version: 1, doc_scope: ['docs/'] })
+    expect(await configExists(repoRoot)).toBe(true)
   })
 
   it('returns true for a malformed file (presence-only check)', async () => {
-    const target = path.join(repoRoot, DOC_SCOPE_RELATIVE_PATH)
+    const target = path.join(repoRoot, DELFINI_CONFIG_RELATIVE_PATH)
     await fs.mkdir(path.dirname(target), { recursive: true })
     await fs.writeFile(target, 'not json at all', 'utf8')
-    expect(await docScopeExists(repoRoot)).toBe(true)
+    expect(await configExists(repoRoot)).toBe(true)
   })
 
-  // Review patch F2: a directory at the JSON path is reported as not-exists,
-  // not as exists. fs.access would incorrectly answer true; fs.stat + isFile()
-  // surfaces the truth so readDocScope doesn't surface an opaque EISDIR.
-  it('returns false when a directory occupies the doc-scope.json path', async () => {
-    const target = path.join(repoRoot, DOC_SCOPE_RELATIVE_PATH)
+  it('returns false when a directory occupies the delfini-config.json path', async () => {
+    const target = path.join(repoRoot, DELFINI_CONFIG_RELATIVE_PATH)
     await fs.mkdir(target, { recursive: true })
-    expect(await docScopeExists(repoRoot)).toBe(false)
+    expect(await configExists(repoRoot)).toBe(false)
   })
 })
 
-describe('deleteDocScope', () => {
+describe('deleteConfig', () => {
   let repoRoot: string
 
   beforeEach(async () => {
@@ -299,13 +414,19 @@ describe('deleteDocScope', () => {
 
   it('removes the file when present', async () => {
     await writeDocScope(['docs/'], { repoRoot })
-    expect(await docScopeExists(repoRoot)).toBe(true)
-    await deleteDocScope(repoRoot)
-    expect(await docScopeExists(repoRoot)).toBe(false)
+    expect(await configExists(repoRoot)).toBe(true)
+    await deleteConfig(repoRoot)
+    expect(await configExists(repoRoot)).toBe(false)
+  })
+
+  it('removes a legacy doc-scope.json too', async () => {
+    await writeRaw(repoRoot, LEGACY_DOC_SCOPE_RELATIVE_PATH, { version: 1, doc_scope: ['docs/'] })
+    await deleteConfig(repoRoot)
+    expect(await configExists(repoRoot)).toBe(false)
   })
 
   it('is idempotent — no error when file already absent', async () => {
-    await expect(deleteDocScope(repoRoot)).resolves.toBeUndefined()
+    await expect(deleteConfig(repoRoot)).resolves.toBeUndefined()
   })
 
   it('does NOT delete the enclosing .claude/skills/delfini/ directory', async () => {
@@ -314,7 +435,7 @@ describe('deleteDocScope', () => {
     const siblingPath = path.join(repoRoot, '.claude', 'skills', 'delfini', 'SKILL.md')
     await fs.writeFile(siblingPath, '# SKILL.md placeholder\n', 'utf8')
 
-    await deleteDocScope(repoRoot)
+    await deleteConfig(repoRoot)
 
     // Sibling must survive
     await expect(fs.access(siblingPath)).resolves.toBeUndefined()
@@ -390,10 +511,6 @@ describe('expandDocScope', () => {
     expect(rels).toEqual(['docs/shared.md'])
   })
 
-  // Review patch (P3.6.2 code review): a non-empty user entry that collapses
-  // to nothing under the shared dialect (`.`, `./`, `docs/..`) must surface as
-  // a missing path so the caller emits a "Skipped" warning — not vanish
-  // silently. A genuinely empty / whitespace-only entry stays silent.
   it('surfaces collapse-to-empty entries (`.`, `docs/..`) as missingPaths, not silent drops', async () => {
     await fs.writeFile(path.join(repoRoot, 'README.md'), '# r', 'utf8')
 
@@ -431,13 +548,13 @@ describe('expandDocScope', () => {
     }
   })
 
-  it('does NOT mutate doc-scope.json on disk when called with override paths', async () => {
+  it('does NOT mutate delfini-config.json on disk when called with override paths', async () => {
     await writeDocScope(['original/path'], { repoRoot })
-    const before = await fs.readFile(path.join(repoRoot, DOC_SCOPE_RELATIVE_PATH), 'utf8')
+    const before = await fs.readFile(path.join(repoRoot, DELFINI_CONFIG_RELATIVE_PATH), 'utf8')
 
     await expandDocScope(['some/other/override.md'], repoRoot)
 
-    const after = await fs.readFile(path.join(repoRoot, DOC_SCOPE_RELATIVE_PATH), 'utf8')
+    const after = await fs.readFile(path.join(repoRoot, DELFINI_CONFIG_RELATIVE_PATH), 'utf8')
     expect(after).toBe(before)
   })
 
@@ -449,15 +566,9 @@ describe('expandDocScope', () => {
     expect(result.files.map(toRepoRel.bind(null, repoRoot))).toEqual(['docs/nested/win.md'])
   })
 
-  // Review patch F1: a hand-edited doc-scope.json could include `../escape`
-  // entries that walk outside the repo root. expandDocScope must NOT
-  // resolve any file outside the repo root, even via glob or symlink. Such
-  // entries route to missingPaths so the caller can warn normally.
   it('treats `../` escape entries as missing (does not walk outside repo root)', async () => {
-    // Create a sibling directory at the parent of repoRoot to verify it
-    // would have matched if validation was missing.
     const parent = path.dirname(repoRoot)
-    const sibling = path.join(parent, `delfini-cli-escape-${Date.now()}`)
+    const sibling = path.join(parent, `delfini-cli-escape-${crypto.randomUUID()}`)
     await fs.mkdir(sibling, { recursive: true })
     await fs.writeFile(path.join(sibling, 'leak.md'), '# leak', 'utf8')
 

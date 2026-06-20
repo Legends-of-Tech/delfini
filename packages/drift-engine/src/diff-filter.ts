@@ -8,8 +8,16 @@
 // Pure-logic — no I/O, no clock, no randomness, no new runtime dep. ESLint
 // `no-restricted-imports` on packages/drift-engine/src/**/*.ts forbids fs /
 // child_process / http / https / @anthropic-ai/sdk / openai / @langchain/* /
-// process.env. Path classification uses hand-written predicates — NO
-// `picomatch` (Story Dev Notes §"Path classification predicates").
+// process.env. The BUILT-IN noise classifiers (lockfile/generated/vendored/
+// fixture) use hand-written predicates — NO `picomatch` (Story Dev Notes
+// §"Path classification predicates").
+//
+// ignore_code_scope (user-configurable ignore paths) is the ONE place this
+// module reaches for picomatch — via the shared `isFileInDocScope` predicate
+// (sibling module, same package, no new external dep). User globs MUST use the
+// same picomatch@4 dialect as the CLI config + the Action array-filter so a
+// file the Skill ignores is the file the Action ignores (ADR-2026-06-01
+// dialect parity). The hand-written built-ins above are unrelated and stay.
 //
 // Exposed via `index.ts` (unlike the P3.7.1 relevance internals, which run
 // INSIDE `buildPrompt`). The gate for this filter lives at the CONSUMER —
@@ -20,6 +28,8 @@
 // invokes this module, so `buildPrompt` output stays byte-identical and the
 // NFR44 snapshot gate stays green (NFR49(b) parity discipline).
 
+import { isFileInDocScope } from './doc-scope.js'
+
 /** Why a path or hunk was dropped. */
 export type DropReason =
   | 'lockfile'
@@ -28,6 +38,9 @@ export type DropReason =
   | 'fixture'
   | 'whitespace-only'
   | 'import-only'
+  // User-configured ignore_code_scope match — the dev told Delfini this code
+  // path can never carry doc-claim signal. Whole-file, path-level only.
+  | 'ignored'
 
 export interface DroppedPath {
   path: string
@@ -49,6 +62,26 @@ export interface FilterDiffResult {
   droppedHunks: DroppedHunk[]
 }
 
+/** Options controlling which filtering passes `filterDiff` applies. */
+export interface FilterDiffOptions {
+  /**
+   * Apply the built-in noise classifiers (lockfile/generated/vendored/fixture
+   * path-level + whitespace-only/import-only hunk-level). Defaults to `true`
+   * so the legacy single-arg call `filterDiff(diff)` is byte-identical to the
+   * pre-options behaviour (the `enableDiffPreFilter` consumer path). Pass
+   * `false` to run an ignore-only pass that leaves all non-ignored files
+   * verbatim.
+   */
+  builtins?: boolean
+  /**
+   * User `ignore_code_scope` entries (repo-relative; picomatch@4 dialect via
+   * the shared `isFileInDocScope` predicate). A changed file matching any
+   * entry is dropped whole with reason `'ignored'`, classified BEFORE the
+   * built-ins. Empty / omitted → no ignore dropping (observably no-op).
+   */
+  ignorePaths?: string[]
+}
+
 // -- Public entry point ------------------------------------------------------
 
 /**
@@ -62,8 +95,17 @@ export interface FilterDiffResult {
  * not lose surrounding context.
  *
  * Identical input → identical output (NFR46 reproducibility carries forward).
+ *
+ * `options.builtins` (default `true`) gates the built-in noise classifiers;
+ * `options.ignorePaths` adds user `ignore_code_scope` dropping on top. With
+ * the default options (`{ builtins: true, ignorePaths: [] }`) the output is
+ * byte-identical to the legacy single-arg `filterDiff(diff)`.
  */
-export function filterDiff(diff: string): FilterDiffResult {
+export function filterDiff(diff: string, options: FilterDiffOptions = {}): FilterDiffResult {
+  const builtins = options.builtins ?? true
+  const ignorePaths = options.ignorePaths ?? []
+  const hasIgnore = ignorePaths.length > 0
+
   const droppedPaths: DroppedPath[] = []
   const droppedHunks: DroppedHunk[] = []
 
@@ -74,6 +116,24 @@ export function filterDiff(diff: string): FilterDiffResult {
   }
 
   for (const file of files.files) {
+    // ignore_code_scope wins over everything — the dev explicitly told Delfini
+    // this code path is out of bounds for drift, so it is dropped whole and
+    // reported as 'ignored' regardless of whether the built-ins would also have
+    // matched it. Shared picomatch@4 predicate → parity with the CLI config and
+    // the Action's array-filter.
+    if (hasIgnore && isFileInDocScope(file.path, ignorePaths)) {
+      droppedPaths.push({ path: file.path, reason: 'ignored' })
+      continue
+    }
+
+    // Built-ins off (ignore-only pass): a non-ignored file passes through
+    // verbatim — no path-level or hunk-level noise dropping. Byte-fidelity via
+    // the original slice.
+    if (!builtins) {
+      keptParts.push(file.rawSlice)
+      continue
+    }
+
     // Path-level drops — classified first, in priority order. Lockfiles win
     // over generated/vendored/fixture since the canonical lockfile names
     // never overlap those patterns in practice.

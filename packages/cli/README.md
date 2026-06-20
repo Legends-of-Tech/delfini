@@ -37,11 +37,12 @@ Scaffold the Skill into a repo (idempotent — safe to re-run).
 - `<path>` — repo root or any subdirectory; resolves up to the git root.
 - Writes `.claude/skills/delfini/SKILL.md`, appends a `/delfini` block to `CLAUDE.md` (creating it if absent, never duplicating), and adds `.delfini-trace/` to `.gitignore`.
 
-### `delfini local-prepare [--scope <paths>] [--base <ref>] [--relevance-threshold <N>]`
+### `delfini local-prepare [--scope <paths>] [--ignore-code-scope <paths>] [--base <ref>] [--relevance-threshold <N>]`
 
 Assemble the analysis input for the coding agent to dispatch.
 
-- `--scope <paths>` — comma-separated paths overriding the persisted doc-scope, for this run only.
+- `--scope <paths>` — comma-separated paths overriding the persisted `doc_scope`, for this run only.
+- `--ignore-code-scope <paths>` — comma-separated code paths whose changes are ignored for analysis (directories, files, or globs), overriding the persisted `ignore_code_scope` for this run only.
 - `--base <ref>` — diff base ref. Defaults to `git merge-base HEAD origin/main`.
 - `--relevance-threshold <N>` — render only the doc sections scoring at/above `N` against the diff, most-relevant-first up to the prompt budget. **Default `5`** (a measured ~40% prompt-token reduction on doc-heavy runs); pass `0` to embed every in-scope doc whole.
 - Writes `analysis-input.json`, `analysis-prompt.md`, and `schema.json` to `.delfini-trace/`.
@@ -59,7 +60,7 @@ Report the branch's change state as JSON (used by the Skill protocol to choose w
 
 ### `delfini --reset-scope`
 
-Delete the persisted `.claude/skills/delfini/doc-scope.json`.
+Delete the persisted `.claude/skills/delfini/delfini-config.json` (and any legacy `doc-scope.json`).
 
 ### `delfini --version`
 

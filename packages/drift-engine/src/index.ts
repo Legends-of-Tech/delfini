@@ -71,6 +71,7 @@ export type {
   DroppedPath,
   DroppedHunk,
   FilterDiffResult,
+  FilterDiffOptions,
 } from './diff-filter.js'
 
 export type {

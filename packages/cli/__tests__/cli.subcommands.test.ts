@@ -164,7 +164,7 @@ describe('cli.ts — `install <path>` subcommand', () => {
         '.claude',
         'skills',
         'delfini',
-        'doc-scope.json',
+        'delfini-config.json',
       )
       const raw = await fs.readFile(docScopePath, 'utf8')
       const parsed = JSON.parse(raw) as { version: number; doc_scope: string[] }

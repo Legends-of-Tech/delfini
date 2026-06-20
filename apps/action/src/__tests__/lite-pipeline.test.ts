@@ -233,6 +233,47 @@ describe('runLitePipeline', () => {
     expect(octokit.rest.issues.createComment.mock.calls[0][0].body).toContain('Smart-skipped')
   })
 
+  it('ignore_code_scope — a PR touching only ignored code smart-skips to a clean PASS', async () => {
+    const octokit = makeOctokit()
+    mockListFiles(octokit, ['src/generated/client.ts', 'src/generated/types.ts'])
+    const orchestrator = new FakeOrchestrator(passResult())
+
+    await runLitePipeline(
+      { ...LITE_INPUTS, ignoreCodeScope: ['src/generated/**'] },
+      deps(octokit, orchestrator),
+    )
+
+    // Both changed files are ignored → nothing reaches smart-skip's
+    // business-logic check → clean PASS, orchestrator never runs.
+    expect(orchestrator.callCount).toBe(0)
+    expect(octokit.rest.checks.create).toHaveBeenCalledTimes(1)
+    expect(octokit.rest.checks.create.mock.calls[0][0].conclusion).toBe('success')
+    expect(core.info).toHaveBeenCalledWith(
+      expect.stringContaining('ignored 2 changed file(s) via ignore_code_scope'),
+    )
+  })
+
+  it('ignore_code_scope — drops ignored files from the analysed diff, keeps the rest', async () => {
+    const octokit = makeOctokit()
+    mockListFiles(octokit, ['src/api.ts', 'src/generated/client.ts'])
+    const orchestrator = new FakeOrchestrator(passResult())
+
+    await runLitePipeline(
+      { ...LITE_INPUTS, ignoreCodeScope: ['src/generated/**'] },
+      deps(octokit, orchestrator),
+    )
+
+    // src/api.ts is real business logic → analysis runs; the ignored generated
+    // file must not appear in the diff the orchestrator sees.
+    expect(orchestrator.callCount).toBe(1)
+    const diff = orchestrator.lastInput?.diff ?? ''
+    expect(diff).toContain('src/api.ts')
+    expect(diff).not.toContain('src/generated/client.ts')
+    expect(core.info).toHaveBeenCalledWith(
+      expect.stringContaining('ignored 1 changed file(s) via ignore_code_scope'),
+    )
+  })
+
   it('hard error — orchestrator throw routes to a neutral check + error comment, no setFailed', async () => {
     const octokit = makeOctokit()
     mockListFiles(octokit, ['src/api.ts'])

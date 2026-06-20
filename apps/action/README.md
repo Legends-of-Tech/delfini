@@ -35,6 +35,7 @@ source only. Do not pin to `@main`.
 | Input | Required | Default | Description |
 |---|---|---|---|
 | `doc_scope` | no | `docs/` | Newline- or comma-delimited list of source-of-truth paths. Each entry may be a directory (recursive `.md` scan), a single file, or a glob (picomatch@4 dialect). |
+| `ignore_code_scope` | no | _(empty)_ | Newline- or comma-delimited list of code paths whose **changes** are ignored for analysis — a changed file matching any entry (directory, file, or glob; same dialect as `doc_scope`) is dropped before smart-skip and the analysis diff, as if it had not changed. Empty means ignore nothing. |
 | `enforcement` | no | `warning` | `required` blocks merge on FAIL; `warning` is advisory only. |
 | `enable_diff_prefilter` | no | `false` | Opt-in deterministic diff pre-filter: drops lockfile/generated/vendored/fixture paths plus whitespace-only and import-only hunks before prompt assembly. |
 
@@ -75,6 +76,27 @@ Repo-side configuration files (`.delfinidocs`, `.delfiniignore`) are **not** rea
 repo-side mechanism that affects what gets analysed is per-file YAML front-matter (below) —
 visible in the doc's own diff, so there's no out-of-band side-channel for excluding
 source-of-truth content.
+
+## Ignoring code paths
+
+`ignore_code_scope` tells Delfini which **code** paths to ignore: a changed file matching any
+entry is dropped before analysis, exactly as if it had not changed. Use it for paths that can
+never contradict your docs but still add diff noise — generated clients, migrations, fixtures, a
+vendored SDK. Each entry is a directory (whole subtree), a single file, or a glob (the same
+picomatch@4 dialect as `doc_scope`):
+
+```yaml
+with:
+  doc_scope: docs/
+  ignore_code_scope: |
+    src/generated/**
+    db/migrations/
+    packages/sdk-vendored
+```
+
+A PR whose only non-doc changes are all ignored is treated as having no business-logic changes,
+so Delfini smart-skips it to a clean PASS. (This is code-side only — it does not affect which
+documents are analysed; that's `doc_scope` plus per-file front-matter.)
 
 ## Excluding individual documents from analysis
 

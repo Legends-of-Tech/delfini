@@ -46564,8 +46564,16 @@ function posixNormalize(input) {
 // Pure-logic — no I/O, no clock, no randomness, no new runtime dep. ESLint
 // `no-restricted-imports` on packages/drift-engine/src/**/*.ts forbids fs /
 // child_process / http / https / @anthropic-ai/sdk / openai / @langchain/* /
-// process.env. Path classification uses hand-written predicates — NO
-// `picomatch` (Story Dev Notes §"Path classification predicates").
+// process.env. The BUILT-IN noise classifiers (lockfile/generated/vendored/
+// fixture) use hand-written predicates — NO `picomatch` (Story Dev Notes
+// §"Path classification predicates").
+//
+// ignore_code_scope (user-configurable ignore paths) is the ONE place this
+// module reaches for picomatch — via the shared `isFileInDocScope` predicate
+// (sibling module, same package, no new external dep). User globs MUST use the
+// same picomatch@4 dialect as the CLI config + the Action array-filter so a
+// file the Skill ignores is the file the Action ignores (ADR-2026-06-01
+// dialect parity). The hand-written built-ins above are unrelated and stay.
 //
 // Exposed via `index.ts` (unlike the P3.7.1 relevance internals, which run
 // INSIDE `buildPrompt`). The gate for this filter lives at the CONSUMER —
@@ -46575,6 +46583,7 @@ function posixNormalize(input) {
 // `@delfini/drift-engine/src/...` imports). The default consumer path never
 // invokes this module, so `buildPrompt` output stays byte-identical and the
 // NFR44 snapshot gate stays green (NFR49(b) parity discipline).
+
 // -- Public entry point ------------------------------------------------------
 /**
  * Filter a unified-diff string deterministically.
@@ -46587,8 +46596,16 @@ function posixNormalize(input) {
  * not lose surrounding context.
  *
  * Identical input → identical output (NFR46 reproducibility carries forward).
+ *
+ * `options.builtins` (default `true`) gates the built-in noise classifiers;
+ * `options.ignorePaths` adds user `ignore_code_scope` dropping on top. With
+ * the default options (`{ builtins: true, ignorePaths: [] }`) the output is
+ * byte-identical to the legacy single-arg `filterDiff(diff)`.
  */
-function filterDiff(diff) {
+function filterDiff(diff, options = {}) {
+    const builtins = options.builtins ?? true;
+    const ignorePaths = options.ignorePaths ?? [];
+    const hasIgnore = ignorePaths.length > 0;
     const droppedPaths = [];
     const droppedHunks = [];
     const files = parseDiffIntoFiles(diff);
@@ -46597,6 +46614,22 @@ function filterDiff(diff) {
         keptParts.push(files.preamble);
     }
     for (const file of files.files) {
+        // ignore_code_scope wins over everything — the dev explicitly told Delfini
+        // this code path is out of bounds for drift, so it is dropped whole and
+        // reported as 'ignored' regardless of whether the built-ins would also have
+        // matched it. Shared picomatch@4 predicate → parity with the CLI config and
+        // the Action's array-filter.
+        if (hasIgnore && isFileInDocScope(file.path, ignorePaths)) {
+            droppedPaths.push({ path: file.path, reason: 'ignored' });
+            continue;
+        }
+        // Built-ins off (ignore-only pass): a non-ignored file passes through
+        // verbatim — no path-level or hunk-level noise dropping. Byte-fidelity via
+        // the original slice.
+        if (!builtins) {
+            keptParts.push(file.rawSlice);
+            continue;
+        }
         // Path-level drops — classified first, in priority order. Lockfiles win
         // over generated/vendored/fixture since the canonical lockfile names
         // never overlap those patterns in practice.
@@ -47538,6 +47571,7 @@ function countByReason(reasons) {
         fixture: 0,
         'whitespace-only': 0,
         'import-only': 0,
+        ignored: 0,
     };
     for (const r of reasons)
         out[r]++;
@@ -47907,6 +47941,14 @@ function readPipelineInputs() {
     // yields the exact same value (`['docs']`) as the omitted-input path — no
     // trailing-slash inconsistency between the two default routes.
     const docScope = normalized.length > 0 ? normalized : normalizeDocScope(['docs/']);
+    // `ignore_code_scope` — same delimited-list parsing + normalizeDocScope as
+    // doc_scope (one dialect, ADR-2026-06-01), but NO default fallback: an
+    // omitted or empty input normalises to `[]` (ignore nothing). A non-empty
+    // input that collapses to nothing under normalisation is simply empty too —
+    // "ignore nothing" is a safe outcome here (no PR is silently skipped by it),
+    // so unlike doc_scope it needs no collapse-to-default warning.
+    const rawIgnoreCodeScope = lib_core.getInput('ignore_code_scope');
+    const ignoreCodeScope = rawIgnoreCodeScope.length > 0 ? normalizeDocScope(rawIgnoreCodeScope.split(/[\n,]/)) : [];
     const rawEnforcement = (lib_core.getInput('enforcement') || 'warning').toLowerCase();
     const enforcement = rawEnforcement === 'required' ? 'required' : 'warning';
     const githubToken = process.env.GITHUB_TOKEN ?? lib_core.getInput('github_token');
@@ -47914,7 +47956,7 @@ function readPipelineInputs() {
     // false: any value other than the literal "true" (case-insensitive) leaves
     // the gate off so the pre-story behaviour is the path of least resistance.
     const enableDiffPreFilter = lib_core.getInput('enable_diff_prefilter').toLowerCase() === 'true';
-    return { docScope, enforcement, githubToken, enableDiffPreFilter };
+    return { docScope, ignoreCodeScope, enforcement, githubToken, enableDiffPreFilter };
 }
 
 // EXTERNAL MODULE: external "node:fs"
@@ -119111,6 +119153,7 @@ function renderPass(docs, docScope) {
 
 
 
+
 // Lite pipeline (FR135) — standalone local analysis with NO Delfini platform:
 // no FR88g doc-scope fetch, no FR88d intake POST, no four-stream routing, no
 // `pending_review_exists` predicate. Doc scope comes solely from
@@ -119148,10 +119191,26 @@ async function runLitePipeline(inputs, deps) {
     // comment (AC7). There is deliberately no top-level catch-all: a throw from
     // the catch handler's own emit bubbles to main.ts's `setFailed` wrapper.
     try {
-        const changedFiles = await listChangedFiles(octokit, ctx);
+        const rawChangedFiles = await listChangedFiles(octokit, ctx);
+        // Step 3a — ignore_code_scope. Drop changed files the dev marked as
+        // out-of-bounds for drift (same picomatch@4 predicate the CLI config and
+        // the engine use → parity by construction). Filtering the FILE ARRAY once,
+        // here, makes an ignored file uniformly "as if unchanged": it feeds both
+        // smart-skip and the analysis diff. (The CLI achieves the same drop on its
+        // diff string via `filterDiff({ ignorePaths })`; the decision predicate is
+        // identical, only the mechanism differs by diff shape.)
+        const ignoreCodeScope = inputs.ignoreCodeScope ?? [];
+        const changedFiles = ignoreCodeScope.length > 0
+            ? rawChangedFiles.filter((file) => !isFileInDocScope(file.filename, ignoreCodeScope))
+            : rawChangedFiles;
+        const ignoredCount = rawChangedFiles.length - changedFiles.length;
+        if (ignoredCount > 0) {
+            lib_core.info(`Lite: ignored ${ignoredCount} changed file(s) via ignore_code_scope.`);
+        }
         const changedPaths = changedFiles.map((file) => file.filename);
         // Step 4 — smart-skip. Both FR57 legs apply; scope is `inputs.docScope`,
-        // never FR88g. A skip is unconditionally a clean PASS in Lite mode.
+        // never FR88g. A skip is unconditionally a clean PASS in Lite mode. Runs on
+        // the post-ignore file set so a PR touching only ignored code smart-skips.
         const skip = classifyPr(changedPaths, { docScope: inputs.docScope });
         if (skip.shouldSkip) {
             lib_core.info(`Lite: smart-skipped — ${skip.reason}`);

@@ -4,11 +4,12 @@
 // FR141 (architecture.md L988-L991):
 //
 //   --version         print the @delfini/cli version (exits 0)
-//   --reset-scope     delete <repo-root>/.claude/skills/delfini/doc-scope.json
-//                     (silent no-op if absent / if outside a git repo, exits 0)
+//   --reset-scope     delete <repo-root>/.claude/skills/delfini/delfini-config.json
+//                     (and any legacy doc-scope.json; silent no-op if absent /
+//                     if outside a git repo, exits 0)
 //   install <path>    scaffold .claude/skills/delfini/SKILL.md + optional
-//                     doc-scope.json seeding (prompt or --scope) + CLAUDE.md
-//                     marker block + .gitignore .delfini-trace/ append
+//                     delfini-config.json doc-scope seeding (prompt or --scope) +
+//                     CLAUDE.md marker block + .gitignore .delfini-trace/ append
 //   local-prepare     compute diff (per --diff-source) + scope expansion +
 //                     prompt + token-budget; write the three .delfini-trace/
 //                     input artefacts
@@ -41,7 +42,7 @@ import { runDiffStatus } from './commands/diff-status.js'
 import { parseScopeInput, runInstall } from './commands/install.js'
 import { runLocalFinalize } from './commands/local-finalize.js'
 import { DEFAULT_RELEVANCE_THRESHOLD, runLocalPrepare } from './commands/local-prepare.js'
-import { deleteDocScope } from './doc-scope.js'
+import { deleteConfig } from './config.js'
 import { RepoRootNotFoundError } from './git.js'
 
 // Resolve the running package's package.json once at module load. We read
@@ -86,7 +87,7 @@ export async function main(argv: string[]): Promise<void> {
     .name('delfini')
     .description('Delfini Skill CLI — deterministic, never calls an LLM.')
     .version(pkg.version, '-V, --version', 'print the @delfini/cli version')
-    .option('--reset-scope', 'delete the persisted doc-scope.json')
+    .option('--reset-scope', 'delete the persisted delfini-config.json (and any legacy doc-scope.json)')
     .exitOverride()
 
   program.action(async (opts: { resetScope?: boolean }) => {
@@ -105,8 +106,8 @@ export async function main(argv: string[]): Promise<void> {
     .option('--no-auto-invoke', 'strip the CLAUDE.md auto-invoke block without prompting')
     .option(
       '--scope <paths>',
-      'Seed doc-scope.json with these paths (space- or comma-separated; overwrites any ' +
-        'existing scope) without prompting. Omit to be prompted interactively on a TTY.',
+      'Seed delfini-config.json doc_scope with these paths (space- or comma-separated; ' +
+        'overwrites any existing scope) without prompting. Omit to be prompted interactively on a TTY.',
     )
     .action(
       async (targetPath: string, opts: { tool: string; autoInvoke?: boolean; scope?: string }) => {
@@ -131,7 +132,12 @@ export async function main(argv: string[]): Promise<void> {
     .description(
       'Compute diff + doc-scope + prompt + token-budget gate; write .delfini-trace/',
     )
-    .option('--scope <paths>', 'Comma-separated doc-scope paths (overrides doc-scope.json)')
+    .option('--scope <paths>', 'Comma-separated doc-scope paths (overrides delfini-config.json doc_scope)')
+    .option(
+      '--ignore-code-scope <paths>',
+      'Comma-separated code paths whose changes are ignored for analysis (overrides ' +
+        'delfini-config.json ignore_code_scope). Each entry is a directory, file, or glob.',
+    )
     .option('--base <ref>', 'Diff base ref (default: git merge-base HEAD origin/main)')
     .option(
       '--diff-source <source>',
@@ -166,6 +172,7 @@ export async function main(argv: string[]): Promise<void> {
     .action(
       async (opts: {
         scope?: string
+        ignoreCodeScope?: string
         base?: string
         diffSource?: string
         relevanceThreshold?: number
@@ -173,6 +180,7 @@ export async function main(argv: string[]): Promise<void> {
       }) => {
         const exitCode = await runLocalPrepare({
           scope: opts.scope,
+          ignoreCodeScope: opts.ignoreCodeScope,
           base: opts.base,
           diffSource: opts.diffSource as 'local' | 'committed' | 'both' | undefined,
           relevanceThreshold: opts.relevanceThreshold,
@@ -217,20 +225,20 @@ export async function main(argv: string[]): Promise<void> {
 /**
  * `--reset-scope` subcommand handler.
  *
- * AC1 — deletes `<repo-root>/.claude/skills/delfini/doc-scope.json` via the
- * `deleteDocScope` primitive shipped by Story P3.2.5.
+ * AC1 — deletes `<repo-root>/.claude/skills/delfini/delfini-config.json` (and
+ * any legacy `doc-scope.json`) via the `deleteConfig` primitive.
  *
- * AC2 — `deleteDocScope` swallows ENOENT internally → silent no-op when the
+ * AC2 — `deleteConfig` swallows ENOENT internally → silent no-op when the
  * file is absent.
  *
  * AC3 — outside a git repo, `getRepoRoot()` (called from inside
- * `deleteDocScope`) throws `RepoRootNotFoundError`. We catch that one error
+ * `deleteConfig`) throws `RepoRootNotFoundError`. We catch that one error
  * type and exit 0 quietly; any other error propagates so real filesystem
  * failures (EACCES, EBUSY) stay visible.
  */
 async function handleResetScope(): Promise<void> {
   try {
-    await deleteDocScope()
+    await deleteConfig()
   } catch (err) {
     if (err instanceof RepoRootNotFoundError) {
       // Nothing to reset when there is no repo. Silent no-op.

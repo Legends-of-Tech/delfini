@@ -317,4 +317,123 @@ describe('filterDiff', () => {
       expect(result.keptDiff).toBe('')
     })
   })
+
+  // ignore_code_scope — user-configurable path dropping via the shared
+  // picomatch@4 predicate. New `filterDiff(diff, options)` arg.
+  describe('ignore_code_scope (options.ignorePaths)', () => {
+    const multiFileDiff = [
+      'diff --git a/src/app.ts b/src/app.ts',
+      '--- a/src/app.ts',
+      '+++ b/src/app.ts',
+      '@@ -1 +1 @@',
+      '-const a = 1',
+      '+const a = 2',
+      'diff --git a/src/generated/client.ts b/src/generated/client.ts',
+      '--- a/src/generated/client.ts',
+      '+++ b/src/generated/client.ts',
+      '@@ -1 +1 @@',
+      '-x',
+      '+y',
+      'diff --git a/db/migrations/0001.sql b/db/migrations/0001.sql',
+      '--- a/db/migrations/0001.sql',
+      '+++ b/db/migrations/0001.sql',
+      '@@ -1 +1 @@',
+      '-create',
+      '+create2',
+      '',
+    ].join('\n')
+
+    it('default options are byte-identical to the legacy single-arg call', () => {
+      const diff = loadFixture('lockfile-pnpm.diff')
+      const legacy = filterDiff(diff)
+      expect(filterDiff(diff, {})).toEqual(legacy)
+      expect(filterDiff(diff, { builtins: true })).toEqual(legacy)
+      expect(filterDiff(diff, { builtins: true, ignorePaths: [] })).toEqual(legacy)
+    })
+
+    it('drops a file matched by a directory ignore entry (subtree semantics)', () => {
+      // `builtins: false` so only the ignore pass runs — proves the drop is
+      // the ignore predicate, not a built-in classifier.
+      const result = filterDiff(multiFileDiff, {
+        builtins: false,
+        ignorePaths: ['src/generated'],
+      })
+      expect(result.droppedPaths).toEqual([
+        { path: 'src/generated/client.ts', reason: 'ignored' },
+      ])
+      expect(result.keptDiff).toContain('diff --git a/src/app.ts b/src/app.ts')
+      expect(result.keptDiff).toContain('diff --git a/db/migrations/0001.sql b/db/migrations/0001.sql')
+      expect(result.keptDiff).not.toContain('src/generated/client.ts')
+    })
+
+    it('drops a file matched by a glob ignore entry', () => {
+      const result = filterDiff(multiFileDiff, {
+        builtins: false,
+        ignorePaths: ['**/migrations/**'],
+      })
+      expect(result.droppedPaths).toEqual([{ path: 'db/migrations/0001.sql', reason: 'ignored' }])
+      expect(result.keptDiff).not.toContain('db/migrations/0001.sql')
+    })
+
+    it('drops a file matched by an exact-file ignore entry', () => {
+      const result = filterDiff(multiFileDiff, {
+        builtins: false,
+        ignorePaths: ['src/app.ts'],
+      })
+      expect(result.droppedPaths).toEqual([{ path: 'src/app.ts', reason: 'ignored' }])
+      expect(result.keptDiff).not.toContain('diff --git a/src/app.ts')
+    })
+
+    it('with builtins:false and empty ignorePaths is an observable no-op (all verbatim)', () => {
+      const result = filterDiff(multiFileDiff, { builtins: false, ignorePaths: [] })
+      expect(result.droppedPaths).toEqual([])
+      expect(result.droppedHunks).toEqual([])
+      expect(result.keptDiff).toBe(multiFileDiff)
+    })
+
+    it('ignore is classified BEFORE the built-ins — an ignored vendored path reports "ignored"', () => {
+      const diff = [
+        'diff --git a/vendor/x.ts b/vendor/x.ts',
+        '--- a/vendor/x.ts',
+        '+++ b/vendor/x.ts',
+        '@@ -1 +1 @@',
+        '-a',
+        '+b',
+        '',
+      ].join('\n')
+      // Built-ins alone would call this 'vendored'; with an ignore match the
+      // user's intent wins and the reason is 'ignored'.
+      expect(filterDiff(diff).droppedPaths).toEqual([{ path: 'vendor/x.ts', reason: 'vendored' }])
+      const result = filterDiff(diff, { builtins: true, ignorePaths: ['vendor/'] })
+      expect(result.droppedPaths).toEqual([{ path: 'vendor/x.ts', reason: 'ignored' }])
+    })
+
+    it('composes with the built-ins — both reasons appear in one pass', () => {
+      const diff = [
+        'diff --git a/src/app.ts b/src/app.ts',
+        '--- a/src/app.ts',
+        '+++ b/src/app.ts',
+        '@@ -1 +1 @@',
+        '-const a = 1',
+        '+const a = 2',
+        'diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml',
+        '--- a/pnpm-lock.yaml',
+        '+++ b/pnpm-lock.yaml',
+        '@@ -1 +1 @@',
+        '-v1',
+        '+v2',
+        'diff --git a/db/migrations/0001.sql b/db/migrations/0001.sql',
+        '--- a/db/migrations/0001.sql',
+        '+++ b/db/migrations/0001.sql',
+        '@@ -1 +1 @@',
+        '-create',
+        '+create2',
+        '',
+      ].join('\n')
+      const result = filterDiff(diff, { builtins: true, ignorePaths: ['db/migrations'] })
+      const dropped = result.droppedPaths.map((d) => `${d.path}|${d.reason}`).sort()
+      expect(dropped).toEqual(['db/migrations/0001.sql|ignored', 'pnpm-lock.yaml|lockfile'])
+      expect(result.keptDiff).toContain('diff --git a/src/app.ts b/src/app.ts')
+    })
+  })
 })

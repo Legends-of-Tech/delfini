@@ -6,7 +6,7 @@ import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
 
 import { main } from '../src/cli.js'
-import { DOC_SCOPE_RELATIVE_PATH } from '../src/doc-scope.js'
+import { DELFINI_CONFIG_RELATIVE_PATH } from '../src/config.js'
 
 // Helper: read the running package's version straight from package.json, so
 // the test stays in sync with whatever value `--version` actually prints.
@@ -125,7 +125,7 @@ describe('cli.ts — main(argv)', () => {
       try {
         process.chdir(repo)
 
-        const docScopeAbs = path.join(repo, DOC_SCOPE_RELATIVE_PATH)
+        const docScopeAbs = path.join(repo, DELFINI_CONFIG_RELATIVE_PATH)
         const skillMdAbs = path.join(repo, '.claude/skills/delfini/SKILL.md')
         const claudeMdAbs = path.join(repo, 'CLAUDE.md')
         const traceFileAbs = path.join(repo, '.delfini-trace/foo.txt')

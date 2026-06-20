@@ -16,19 +16,26 @@
 // same package.
 
 export {
-  DOC_SCOPE_RELATIVE_PATH,
-  DOC_SCOPE_VERSION,
-  DocScopeCorruptError,
-  DocScopeValidationError,
-  DocScopeVersionMismatchError,
-  deleteDocScope,
-  docScopeExists,
+  DELFINI_CONFIG_RELATIVE_PATH,
+  DELFINI_CONFIG_VERSION,
+  LEGACY_DOC_SCOPE_RELATIVE_PATH,
+  ConfigCorruptError,
+  ConfigValidationError,
+  ConfigVersionMismatchError,
+  configExists,
+  deleteConfig,
   expandDocScope,
-  readDocScope,
+  readConfig,
+  writeConfig,
   writeDocScope,
-} from './doc-scope.js'
+} from './config.js'
 
-export type { DocScope, DocScopeExpansionResult, DocScopeWriteOptions } from './doc-scope.js'
+export type {
+  DelfiniConfig,
+  ConfigUpdate,
+  ConfigWriteOptions,
+  DocScopeExpansionResult,
+} from './config.js'
 
 export { RepoRootNotFoundError, getRepoRoot } from './git.js'
 

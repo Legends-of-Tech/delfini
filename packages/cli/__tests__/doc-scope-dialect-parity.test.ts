@@ -41,7 +41,7 @@ import { fileURLToPath } from 'node:url'
 
 import { isFileInDocScope } from '@delfini/drift-engine'
 
-import { expandDocScope } from '../src/doc-scope.js'
+import { expandDocScope } from '../src/config.js'
 
 interface DialectFixtureRow {
   name: string
