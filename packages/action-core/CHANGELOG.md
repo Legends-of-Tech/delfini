@@ -1,5 +1,16 @@
 # @delfini/action-core
 
+## 0.2.0
+
+### Minor Changes
+
+- ⚙️ CLI: [#9](https://github.com/Legends-of-Tech/delfini/pull/9) [`5e236c5`](https://github.com/Legends-of-Tech/delfini/commit/5e236c59a478853af8fb55732a2330c6b4754a5e) Thanks [@raymondht](https://github.com/raymondht)! - Add `ignore_code_scope` — configure code paths whose changes Delfini ignores during drift analysis. A changed file matching any entry (directory, file, or glob; the same picomatch@4 dialect as `doc_scope`) is dropped from the analysed diff, as if it had not changed. Configure it in the new committed `delfini-config.json` (renamed from `doc-scope.json`, with a transparent legacy read-fallback + one-time migration) or per-run via the new `delfini local-prepare --ignore-code-scope` flag; on the GitHub Action via the new `ignore_code_scope` input (a PR touching only ignored code smart-skips to a clean PASS). The drift-engine `filterDiff` gains a `{ builtins, ignorePaths }` options arg — the no-config path stays byte-identical, so the snapshot/parity gates are unaffected.
+
+### Patch Changes
+
+- Updated dependencies [[`5e236c5`](https://github.com/Legends-of-Tech/delfini/commit/5e236c59a478853af8fb55732a2330c6b4754a5e)]:
+  - @delfini/drift-engine@0.3.0
+
 ## 0.1.2
 
 ### Patch Changes
