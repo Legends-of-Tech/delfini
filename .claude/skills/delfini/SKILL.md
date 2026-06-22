@@ -58,11 +58,11 @@ The config shape (v1) is:
 - `doc_scope` — the source-of-truth docs Delfini analyses (directories scanned recursively for `.md`, single files, or globs).
 - `ignore_code_scope` — **optional.** Code paths whose CHANGES Delfini ignores: a changed file matching any entry (directory, file, or glob — same dialect as `doc_scope`) is dropped from the analysed diff, as if it had not changed. Omit it (or leave it empty) to analyse all changed code.
 
-If the file exists, parse it and continue.
+If the file exists and its `doc_scope` is non-empty, parse it and continue.
 
-If no config exists AND the user did not pass `--scope <paths>` to `/delfini`, prompt the user in a single turn:
+If no config exists, **or the config exists but its `doc_scope` is empty** (the `delfini install` scaffold before it has been filled in), AND the user did not pass `--scope <paths>` to `/delfini`, prompt the user in a single turn:
 
-> "No `delfini-config.json` found. Which docs should Delfini analyse? Provide one or more paths — directories (recursive `.md` scan), single files, or globs. Example: `docs/ specs/architecture.md packages/*/README.md`."
+> "No docs configured yet. Which docs should Delfini analyse? Provide one or more paths — directories (recursive `.md` scan), single files, or globs. Example: `docs/ specs/architecture.md packages/*/README.md`."
 
 Validate each path the user supplies:
 

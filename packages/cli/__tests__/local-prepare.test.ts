@@ -6,7 +6,7 @@ import os from 'node:os'
 import { Writable } from 'node:stream'
 import simpleGit, { type SimpleGit } from 'simple-git'
 
-import { writeDocScope } from '../src/config.js'
+import { writeConfigScaffold, writeDocScope } from '../src/config.js'
 import {
   PROMPT_TOKEN_BUDGET,
   runLocalPrepare,
@@ -85,6 +85,21 @@ describe('runLocalPrepare — exit 2 when no scope', () => {
   })
 
   it('returns 2 when no --scope and no persisted doc-scope.json (NFR47 mode 5)', async () => {
+    const stderr = makeCapture()
+    const code = await runLocalPrepare({
+      repoRoot: repo.root,
+      stderr: stderr.stream,
+      base: 'HEAD',
+    })
+    expect(code).toBe(2)
+    expect(stderr.text()).toMatch(/No doc-scope configured/)
+  })
+
+  it('returns 2 when the config exists but doc_scope is empty (install scaffold)', async () => {
+    // `delfini install` scaffolds { doc_scope: [], ignore_code_scope: [] } when
+    // the doc prompt is skipped. An empty doc_scope is "unconfigured" → exit 2,
+    // so the SKILL first-run prompt fills the template (not a silent zero-doc run).
+    await writeConfigScaffold({ doc_scope: [], ignore_code_scope: [] }, { repoRoot: repo.root })
     const stderr = makeCapture()
     const code = await runLocalPrepare({
       repoRoot: repo.root,

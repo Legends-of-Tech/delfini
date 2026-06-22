@@ -109,21 +109,39 @@ export async function main(argv: string[]): Promise<void> {
       'Seed delfini-config.json doc_scope with these paths (space- or comma-separated; ' +
         'overwrites any existing scope) without prompting. Omit to be prompted interactively on a TTY.',
     )
+    .option(
+      '--ignore-code-scope <paths>',
+      'Seed delfini-config.json ignore_code_scope with these code paths (space- or comma-' +
+        'separated) without prompting. Omit to be prompted interactively on a TTY.',
+    )
     .action(
-      async (targetPath: string, opts: { tool: string; autoInvoke?: boolean; scope?: string }) => {
+      async (
+        targetPath: string,
+        opts: { tool: string; autoInvoke?: boolean; scope?: string; ignoreCodeScope?: string },
+      ) => {
         // Tri-state: undefined (no flag) → interactive prompt inside runInstall;
         // true (--auto-invoke) → append; false (--no-auto-invoke) → strip.
         const confirmAutoInvoke =
           opts.autoInvoke === undefined
             ? undefined
             : (): Promise<boolean> => Promise.resolve(opts.autoInvoke as boolean)
-        // undefined (no --scope) → interactive prompt inside runInstall;
-        // present → seed doc-scope.json from the parsed path list.
+        // undefined (no flag) → interactive prompt inside runInstall;
+        // present → seed the corresponding field from the parsed path list.
         const provideDocScope =
           opts.scope === undefined
             ? undefined
             : (): Promise<string[]> => Promise.resolve(parseScopeInput(opts.scope as string))
-        await runInstall(targetPath, { tool: opts.tool, confirmAutoInvoke, provideDocScope })
+        const provideIgnoreCodeScope =
+          opts.ignoreCodeScope === undefined
+            ? undefined
+            : (): Promise<string[]> =>
+                Promise.resolve(parseScopeInput(opts.ignoreCodeScope as string))
+        await runInstall(targetPath, {
+          tool: opts.tool,
+          confirmAutoInvoke,
+          provideDocScope,
+          provideIgnoreCodeScope,
+        })
       },
     )
 

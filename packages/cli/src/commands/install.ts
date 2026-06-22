@@ -3,13 +3,14 @@
 // Single-write surface, with an interactive auto-invoke opt-in toggle:
 //   1. writes `.claude/skills/delfini/SKILL.md` (overwrite — the documented
 //      upgrade path per architecture.md L1142)
-//   2. interactively asks "Which docs should Delfini track?" and, when the
-//      user supplies one or more paths, persists them to
-//      `.claude/skills/delfini/delfini-config.json` via the shared `writeDocScope`
-//      primitive. Skips silently when a scope is already configured (never
-//      clobbers the committed, team-shared file), when the answer is blank,
-//      or on a non-TTY stdin — in every skip case the SKILL.md first-run
-//      prompt remains the fallback that seeds the scope later.
+//   2. interactively asks "Which docs should Delfini track?" then "Which code
+//      paths should Delfini ignore?", and writes BOTH to
+//      `.claude/skills/delfini/delfini-config.json`. The file is ALWAYS created
+//      (when none exists) with both `doc_scope` and `ignore_code_scope` fields —
+//      empty arrays when every prompt is skipped or on a non-TTY stdin — so the
+//      team gets a committed, hand-editable template. Skips only when a config
+//      already exists (never clobbers the committed, team-shared file). An empty
+//      `doc_scope` is treated as "unconfigured": the first /delfini run prompts.
 //   3. interactively asks "Auto-invoke /delfini on PR creation? (y/n)" — on
 //      YES idempotently appends a marker-bounded block to `CLAUDE.md`
 //      (creates the file if absent; never duplicates); on NO strips an
@@ -43,7 +44,8 @@ import {
   DELFINI_CONFIG_RELATIVE_PATH,
   ConfigValidationError,
   configExists,
-  writeDocScope,
+  readConfig,
+  writeConfigScaffold,
 } from '../config.js'
 import { getRepoRoot } from '../git.js'
 import { appendToGitignore } from '../trace.js'
@@ -76,10 +78,19 @@ export interface RunInstallOptions {
    * empty list is a no-op. When omitted, `runInstall` prompts interactively
    * on a TTY only if no config exists yet; on a non-TTY stdin, or
    * when a scope is already configured, it leaves the config untouched.
-   * Invalid paths (rejected by `writeDocScope`) warn-and-skip — the scaffold
-   * always completes; the SKILL.md first-run prompt re-seeds the scope later.
+   * Invalid paths (rejected on write) warn-and-skip — the scaffold always
+   * completes; the SKILL.md first-run prompt re-seeds the scope later.
    */
   provideDocScope?: () => Promise<string[]>
+  /**
+   * Resolves the `ignore_code_scope` path list (code paths whose changes
+   * Delfini ignores). When provided, `runInstall` uses it directly (the
+   * `--ignore-code-scope` CLI flag and the test seam) and never prompts. When
+   * omitted, `runInstall` prompts interactively on a TTY (right after the
+   * doc-scope prompt) only if no config exists yet. Either way the committed
+   * `delfini-config.json` is created with both fields — empty when skipped.
+   */
+  provideIgnoreCodeScope?: () => Promise<string[]>
 }
 
 /** Resolved auto-invoke decision: append, strip, or leave CLAUDE.md untouched. */
@@ -158,12 +169,12 @@ export async function runInstall(
   const repoRoot = await getRepoRoot(resolvedTarget)
 
   writeSkillTemplate(repoRoot, logger)
-  await applyDocScope(repoRoot, logger, options?.provideDocScope)
+  await applyConfig(repoRoot, logger, options?.provideDocScope, options?.provideIgnoreCodeScope)
   await applyAutoInvokeDecision(repoRoot, logger, options?.confirmAutoInvoke)
   appendGitignoreLine(repoRoot, logger)
 }
 
-// -- Doc-scope seeding (interactive path list) -------------------------------
+// -- Config seeding (doc-scope + ignore-code-scope prompts) ------------------
 
 /**
  * Split a free-text answer into a path list. Whitespace- and/or comma-
@@ -181,50 +192,91 @@ function sanitiseScope(paths: string[]): string[] {
   return paths.map((entry) => entry.trim()).filter((entry) => entry.length > 0)
 }
 
-async function applyDocScope(
+async function applyConfig(
   repoRoot: string,
   logger: InstallLogger,
   provideDocScope?: () => Promise<string[]>,
+  provideIgnoreCodeScope?: () => Promise<string[]>,
 ): Promise<void> {
   const target = join(repoRoot, DELFINI_CONFIG_RELATIVE_PATH)
+  const hasSeam = provideDocScope !== undefined || provideIgnoreCodeScope !== undefined
 
-  // Explicit scope (`--scope` flag or test seam): write/overwrite. An empty
-  // list is a deliberate no-op rather than an error.
-  if (provideDocScope) {
-    const paths = sanitiseScope(await provideDocScope())
-    if (paths.length === 0) {
-      log(logger, `delfini-config.json → ${target} (no paths provided, no change)`)
-      return
-    }
-    await persistDocScope(repoRoot, logger, target, paths)
-    return
-  }
-
-  // No explicit scope. Never clobber an existing committed, team-shared scope.
-  if (await configExists(repoRoot)) {
+  // Pure-interactive install with a config already present: never clobber the
+  // committed, team-shared file. Explicit `--scope` / `--ignore-code-scope`
+  // flags ARE intent-to-set and fall through (preserving the field they don't
+  // name).
+  if (!hasSeam && (await configExists(repoRoot))) {
     log(logger, `delfini-config.json → ${target} (already configured, no change)`)
     return
   }
 
-  // Absent scope, non-TTY stdin: never block on a readline prompt. The
-  // SKILL.md first-run prompt seeds the scope on the first /delfini run.
-  if (!process.stdin.isTTY) {
-    log(
-      logger,
-      `delfini-config.json → ${target} (non-interactive shell: scope prompt skipped, no change)`,
-    )
-    return
-  }
+  // Read any existing config so a single-field flag run (or an empty flag
+  // value) preserves the field it doesn't touch.
+  const existing = await readConfig(repoRoot)
 
-  const paths = await promptDocScope()
-  if (paths.length === 0) {
+  const docPaths = await resolveSeedField(
+    provideDocScope,
+    existing?.doc_scope ?? [],
+    promptDocScope,
+    hasSeam,
+  )
+  const ignorePaths = await resolveSeedField(
+    provideIgnoreCodeScope,
+    existing?.ignore_code_scope ?? [],
+    promptIgnoreCodeScope,
+    hasSeam,
+  )
+
+  // ALWAYS write the scaffold — even when both lists are empty (every prompt
+  // skipped, or a non-TTY shell), the committed `delfini-config.json` is
+  // created with BOTH fields so the team gets a visible, hand-editable template.
+  try {
+    await writeConfigScaffold(
+      { doc_scope: docPaths, ignore_code_scope: ignorePaths },
+      { repoRoot },
+    )
     log(
       logger,
-      `delfini-config.json → ${target} (no paths provided, no change — first /delfini run will prompt)`,
+      `delfini-config.json → ${target} (wrote ${docPaths.length} doc path(s), ${ignorePaths.length} ignore path(s))`,
     )
-    return
+  } catch (err) {
+    if (err instanceof ConfigValidationError) {
+      // Warn-and-skip: a bad path must not abort the rest of the scaffold.
+      log(
+        logger,
+        `delfini-config.json → ${target} (skipped — ${err.message}). ` +
+          `Fix the path(s) and re-run \`delfini install\`, edit the file directly, ` +
+          `or set the scope on the first /delfini run.`,
+      )
+      return
+    }
+    // Real I/O failures (EACCES, ENOSPC, …) still bubble.
+    throw err
   }
-  await persistDocScope(repoRoot, logger, target, paths)
+}
+
+/**
+ * Resolve one scope field's seed list:
+ *   - a non-empty flag/seam value wins;
+ *   - an empty flag value, or a flag run that named the OTHER field, preserves
+ *     the existing value (never silently wipes a field);
+ *   - a pure-interactive run prompts on a TTY, else yields `[]`.
+ */
+async function resolveSeedField(
+  provide: (() => Promise<string[]>) | undefined,
+  existingValue: string[],
+  prompt: () => Promise<string[]>,
+  hasSeam: boolean,
+): Promise<string[]> {
+  if (provide !== undefined) {
+    const fromFlag = sanitiseScope(await provide())
+    if (fromFlag.length > 0) return fromFlag
+    return existingValue
+  }
+  if (hasSeam) {
+    return existingValue
+  }
+  return process.stdin.isTTY ? await prompt() : []
 }
 
 async function promptDocScope(): Promise<string[]> {
@@ -243,30 +295,17 @@ async function promptDocScope(): Promise<string[]> {
   }
 }
 
-async function persistDocScope(
-  repoRoot: string,
-  logger: InstallLogger,
-  target: string,
-  paths: string[],
-): Promise<void> {
+async function promptIgnoreCodeScope(): Promise<string[]> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
   try {
-    // Delegate validation + normalisation + write to the shared primitive.
-    // Pass repoRoot so writeDocScope does not re-run getRepoRoot().
-    await writeDocScope(paths, { repoRoot })
-    log(logger, `delfini-config.json → ${target} (wrote ${paths.length} path(s))`)
-  } catch (err) {
-    if (err instanceof ConfigValidationError) {
-      // Warn-and-skip: a bad path must not abort the rest of the scaffold.
-      log(
-        logger,
-        `delfini-config.json → ${target} (skipped — ${err.message}). ` +
-          `Fix the path(s) and re-run \`delfini install\`, edit the file directly, ` +
-          `or set the scope on the first /delfini run.`,
-      )
-      return
-    }
-    // Real I/O failures (EACCES, ENOSPC, …) still bubble.
-    throw err
+    const answer = await rl.question(
+      'Which code paths should Delfini IGNORE? Changes under these paths are ' +
+        'skipped during analysis. Enter directories, files, or globs, space- or ' +
+        'comma-separated (e.g. `src/generated/** db/migrations/`). Leave blank for none: ',
+    )
+    return parseScopeInput(answer)
+  } finally {
+    rl.close()
   }
 }
 

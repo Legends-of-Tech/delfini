@@ -16,6 +16,7 @@ import {
   expandDocScope,
   readConfig,
   writeConfig,
+  writeConfigScaffold,
   writeDocScope,
 } from '../src/config.js'
 
@@ -237,6 +238,49 @@ describe('writeConfig', () => {
     await expect(writeConfig({ ignore_code_scope: ['gen/**'] }, { repoRoot })).rejects.toBeInstanceOf(
       ConfigValidationError,
     )
+  })
+})
+
+describe('writeConfigScaffold', () => {
+  let repoRoot: string
+
+  beforeEach(async () => {
+    repoRoot = await makeTempRepoRoot()
+  })
+
+  afterEach(async () => {
+    await cleanup(repoRoot)
+  })
+
+  it('always writes BOTH fields even when both lists are empty', async () => {
+    await writeConfigScaffold({ doc_scope: [], ignore_code_scope: [] }, { repoRoot })
+    const written = await fs.readFile(path.join(repoRoot, DELFINI_CONFIG_RELATIVE_PATH), 'utf8')
+    expect(JSON.parse(written)).toEqual({ version: 1, doc_scope: [], ignore_code_scope: [] })
+  })
+
+  it('normalises supplied entries and keeps both fields', async () => {
+    await writeConfigScaffold(
+      { doc_scope: ['docs/'], ignore_code_scope: ['src//generated/'] },
+      { repoRoot },
+    )
+    expect(await readConfig(repoRoot)).toEqual({
+      version: 1,
+      doc_scope: ['docs'],
+      ignore_code_scope: ['src/generated'],
+    })
+  })
+
+  it('rejects an entry that escapes the repo root', async () => {
+    await expect(
+      writeConfigScaffold({ doc_scope: ['../outside'], ignore_code_scope: [] }, { repoRoot }),
+    ).rejects.toThrow(/escapes repo root/)
+  })
+
+  it('migrates a legacy doc-scope.json (deletes it)', async () => {
+    await writeRaw(repoRoot, LEGACY_DOC_SCOPE_RELATIVE_PATH, { version: 1, doc_scope: ['old/'] })
+    await writeConfigScaffold({ doc_scope: [], ignore_code_scope: [] }, { repoRoot })
+    const legacy = path.join(repoRoot, LEGACY_DOC_SCOPE_RELATIVE_PATH)
+    await expect(fs.access(legacy)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })
 

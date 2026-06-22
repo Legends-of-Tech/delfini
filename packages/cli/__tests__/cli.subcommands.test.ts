@@ -167,8 +167,16 @@ describe('cli.ts — `install <path>` subcommand', () => {
         'delfini-config.json',
       )
       const raw = await fs.readFile(docScopePath, 'utf8')
-      const parsed = JSON.parse(raw) as { version: number; doc_scope: string[] }
-      expect(parsed).toEqual({ version: 1, doc_scope: ['docs', 'specs/architecture.md'] })
+      const parsed = JSON.parse(raw) as {
+        version: number
+        doc_scope: string[]
+        ignore_code_scope: string[]
+      }
+      expect(parsed).toEqual({
+        version: 1,
+        doc_scope: ['docs', 'specs/architecture.md'],
+        ignore_code_scope: [],
+      })
     } finally {
       await rmrf(repo, originalCwd)
     }

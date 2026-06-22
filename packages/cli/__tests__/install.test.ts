@@ -666,13 +666,37 @@ describe('runInstall — doc-scope.json seeding via provideDocScope', () => {
     expect(parsed).toEqual({ version: 1, doc_scope: ['docs', 'specs/architecture.md'], ignore_code_scope: [] })
   })
 
-  it('does not write doc-scope.json when the list is empty (no-op)', async () => {
+  it('creates an empty scaffold (both fields) when the provided list is empty', async () => {
     const logger = makeLogger()
     await runInstall(repoRoot, { logger, provideDocScope: scope([]) })
-    expect(existsSync(join(repoRoot, DOC_SCOPE_REL))).toBe(false)
-    const allLogs = logger.log.mock.calls.map((c) => c.join(' ')).join('\n')
-    expect(allLogs).toMatch(/delfini-config\.json/)
-    expect(allLogs).toMatch(/no paths provided/i)
+    // The committed template is always created so the team has both knobs.
+    expect(existsSync(join(repoRoot, DOC_SCOPE_REL))).toBe(true)
+    const parsed = await readConfig(repoRoot)
+    expect(parsed).toEqual({ version: 1, doc_scope: [], ignore_code_scope: [] })
+  })
+
+  it('seeds ignore_code_scope from provideIgnoreCodeScope, preserving doc_scope', async () => {
+    await runInstall(repoRoot, {
+      logger: makeLogger(),
+      provideDocScope: scope(['docs/']),
+      provideIgnoreCodeScope: scope(['src/generated/**', 'db/migrations/']),
+    })
+    const parsed = await readConfig(repoRoot)
+    expect(parsed).toEqual({
+      version: 1,
+      doc_scope: ['docs'],
+      ignore_code_scope: ['src/generated/**', 'db/migrations'],
+    })
+  })
+
+  it('an ignore-only seam run preserves an existing doc_scope', async () => {
+    await runInstall(repoRoot, { logger: makeLogger(), provideDocScope: scope(['docs/']) })
+    await runInstall(repoRoot, {
+      logger: makeLogger(),
+      provideIgnoreCodeScope: scope(['gen/**']),
+    })
+    const parsed = await readConfig(repoRoot)
+    expect(parsed).toEqual({ version: 1, doc_scope: ['docs'], ignore_code_scope: ['gen/**'] })
   })
 
   it('drops blank entries from the provided list before writing', async () => {
@@ -721,13 +745,16 @@ describe('runInstall — doc-scope.json default (no seam) behaviour', () => {
     rmSync(repoRoot, { recursive: true, force: true })
   })
 
-  it('skips the scope prompt on a non-TTY stdin and writes nothing', async () => {
-    // The file-level beforeAll forces isTTY=false, so a no-seam call hits skip.
+  it('creates an empty scaffold (both fields) on a non-TTY stdin with no seam', async () => {
+    // The file-level beforeAll forces isTTY=false, so a no-seam call cannot
+    // prompt — but the committed template is still created with both fields.
     const logger = makeLogger()
     await runInstall(repoRoot, { logger })
-    expect(existsSync(join(repoRoot, DOC_SCOPE_REL))).toBe(false)
+    expect(existsSync(join(repoRoot, DOC_SCOPE_REL))).toBe(true)
+    const parsed = await readConfig(repoRoot)
+    expect(parsed).toEqual({ version: 1, doc_scope: [], ignore_code_scope: [] })
     const allLogs = logger.log.mock.calls.map((c) => c.join(' ')).join('\n')
-    expect(allLogs).toMatch(/non-interactive shell: scope prompt skipped/i)
+    expect(allLogs).toMatch(/wrote 0 doc path\(s\), 0 ignore path\(s\)/i)
   })
 
   it('never clobbers an already-configured scope on a no-seam re-run', async () => {

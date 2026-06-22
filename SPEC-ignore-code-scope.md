@@ -227,6 +227,21 @@ documents from the doc set — docs are governed by `doc_scope` + in-doc front-m
 contradiction: it is still rendered as a doc if in `doc_scope`; only its appearance *in the diff* is
 dropped. This keeps the two scopes orthogonal and matches the requirement's wording ("code changes").
 
+### 6. Install scaffolding (follow-up)
+
+`delfini install` prompts for **both** scopes — docs first, then ignore code paths — and **always
+creates** `delfini-config.json` (when none exists) with **both fields present**, using empty arrays
+when a prompt is skipped (or on a non-TTY shell). This gives the team a committed, hand-editable
+template with both knobs visible. New `--ignore-code-scope` install flag mirrors `--scope` for
+non-interactive runs; a single-field flag run preserves the field it doesn't name.
+
+Consequence: an empty `doc_scope` is treated as **"not configured"** in `local-prepare`
+(`resolveScopePaths` returns null → exit 2) and in the SKILL's "Load config" step, so the first
+`/delfini` run prompts to fill the scaffold rather than silently analysing zero docs.
+New writer `writeConfigScaffold` (always both fields, empty allowed) backs this; the general
+`writeConfig` / `writeDocScope` semantics (require non-empty doc_scope, omit empty ignore) are
+unchanged.
+
 ## Code Style
 
 Match the surrounding code (Prettier `.prettierrc`, ESLint flat config): named exports only,

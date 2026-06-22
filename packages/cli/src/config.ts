@@ -240,7 +240,7 @@ export async function writeConfig(
 
 /**
  * Persist the doc scope, preserving any existing `ignore_code_scope`. Thin
- * wrapper over `writeConfig` kept for the install / first-run callers whose
+ * wrapper over `writeConfig` kept for the first-run / `--scope` callers whose
  * only job is to seed the docs Delfini tracks.
  */
 export async function writeDocScope(
@@ -251,6 +251,39 @@ export async function writeDocScope(
     throw new ConfigValidationError('at least one path is required')
   }
   await writeConfig({ doc_scope: paths }, options)
+}
+
+/**
+ * Write the install-time scaffold config. ALWAYS emits BOTH `doc_scope` and
+ * `ignore_code_scope` fields, and permits empty arrays — so `delfini install`
+ * leaves a committed, hand-editable template with both knobs visible even when
+ * the user skips every prompt. Validates / normalises any supplied entries via
+ * the shared engine algebra; unlike `writeConfig` it neither requires a
+ * non-empty `doc_scope` nor omits an empty `ignore_code_scope`. Replaces any
+ * existing config (callers gate on `configExists` to avoid clobbering) and
+ * migrates away a legacy `doc-scope.json`.
+ */
+export async function writeConfigScaffold(
+  update: { doc_scope: string[]; ignore_code_scope: string[] },
+  options?: ConfigWriteOptions,
+): Promise<void> {
+  const root = options?.repoRoot ?? (await getRepoRoot())
+  const docScope = validateAndNormalize(update.doc_scope, 'doc_scope', { requireNonEmpty: false })
+  const ignoreCodeScope = validateAndNormalize(update.ignore_code_scope, 'ignore_code_scope', {
+    requireNonEmpty: false,
+  })
+
+  const payload = {
+    version: DELFINI_CONFIG_VERSION,
+    doc_scope: docScope,
+    ignore_code_scope: ignoreCodeScope,
+  }
+
+  const target = path.join(root, DELFINI_CONFIG_RELATIVE_PATH)
+  await fs.mkdir(path.dirname(target), { recursive: true })
+  await fs.writeFile(target, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
+
+  await removeLegacyDocScope(root)
 }
 
 /**

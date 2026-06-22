@@ -27,6 +27,7 @@ export {
   expandDocScope,
   readConfig,
   writeConfig,
+  writeConfigScaffold,
   writeDocScope,
 } from './config.js'
 

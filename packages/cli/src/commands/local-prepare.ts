@@ -417,10 +417,14 @@ function resolveScopePaths(
   if (config === null) {
     return null
   }
-  // Defensive: the config primitive guarantees non-empty entries via its Zod
-  // schema (z.string().min(1)), but treat an empty array as "configured but
-  // empty" — still proceed (yields zero docs, may yield zero findings — that's
-  // the user's choice).
+  // An empty `doc_scope` means "not configured yet" — this is the shape
+  // `delfini install` scaffolds when the doc prompt is skipped (both fields
+  // present but empty). Treat it like a missing config (exit 2) so the SKILL's
+  // first-run prompt fills the template, rather than silently analysing zero
+  // docs and reporting no drift.
+  if (config.doc_scope.length === 0) {
+    return null
+  }
   return config.doc_scope
 }
 
