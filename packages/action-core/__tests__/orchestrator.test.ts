@@ -304,4 +304,82 @@ describe('SingleCallOrchestrator', () => {
     await expect(orchestrator.analyze(sampleInput)).rejects.toThrow('Failed to parse')
     expect(invoke).toHaveBeenCalledTimes(2)
   })
+
+  // --- Multi-prompt fallback (over-budget diff) -----------------------------
+
+  const QUOTE = 'The moduleHandler in src/modules dispatches 100 events per tick.'
+
+  // A diff big enough that the whole prompt exceeds a 9k budget but each routed
+  // chunk fits — the 30 hunks all reference the ## Modules section's identifiers.
+  function overBudgetInput(): AnalysisInput {
+    let diff = ''
+    for (let i = 0; i < 30; i++) {
+      diff +=
+        `diff --git a/src/modules/mod-${i}.ts b/src/modules/mod-${i}.ts\n` +
+        `--- a/src/modules/mod-${i}.ts\n+++ b/src/modules/mod-${i}.ts\n` +
+        `@@ -1,2 +1,2 @@\n` +
+        `-export const moduleHandler = registerModuleHandler(${i})\n` +
+        `+export const moduleHandler = registerModuleHandler(${i} + 1)\n` +
+        ` // moduleHandler under src/modules\n`
+    }
+    return {
+      diff,
+      docs: [
+        {
+          path: 'docs/guide.md',
+          content: `# Reference\n\n## Modules\n\n${QUOTE}\nEvery src/modules file registers a moduleHandler.`,
+          frontMatterLineCount: 0,
+        },
+      ],
+      prMetadata: { owner: 'acme', repo: 'widget', prNumber: 9, headSha: 'h', baseSha: 'b', title: 't' },
+    }
+  }
+
+  it('over budget → splits via planPrompts, dispatches each chunk, merges + dedups', async () => {
+    const canned: AnalysisResult = {
+      contradictions: [
+        {
+          targetDocPath: 'docs/guide.md',
+          targetSection: '## Modules',
+          targetLineStart: 5,
+          targetLineEnd: 5,
+          whatChanged: 'moduleHandler tick budget changed',
+          whatContradicts: 'doc states a stale value',
+          proposedReplacement: 'The moduleHandler in src/modules dispatches 200 events per tick.',
+          severity: 'High',
+          confidence: 4,
+          quotedDocText: QUOTE,
+        },
+      ],
+      additions: [],
+      rawConfidence: 0.7,
+    }
+    // Every chunk returns the SAME finding (the shared section was rendered into
+    // each chunk) — merge must collapse it to one.
+    const invoke = vi.fn().mockResolvedValue(canned)
+    const model = makeFakeModel({ invoke })
+    const orchestrator = new SingleCallOrchestrator(model, { promptTokenBudget: 9000 })
+
+    const result = await orchestrator.analyze(overBudgetInput())
+
+    // Split happened → more than one LLM call…
+    expect(invoke.mock.calls.length).toBeGreaterThanOrEqual(2)
+    // …but the duplicate finding is deduped down to one.
+    expect(result.contradictions).toHaveLength(1)
+    expect(result.contradictions[0].proposedReplacement).toContain('200 events')
+  })
+
+  it('over budget but planner cannot split (threshold 0) → one whole-prompt call', async () => {
+    const invoke = vi
+      .fn()
+      .mockResolvedValue({ contradictions: [], additions: [], rawConfidence: 0.1 })
+    const model = makeFakeModel({ invoke })
+    const orchestrator = new SingleCallOrchestrator(model, {
+      promptTokenBudget: 1,
+      relevanceThreshold: 0,
+    })
+
+    await orchestrator.analyze(overBudgetInput())
+    expect(invoke).toHaveBeenCalledTimes(1)
+  })
 })

@@ -1,0 +1,49 @@
+{
+  "groundTruthDocPath": "docs/auth-architecture.md",
+  "groundTruthSection": {
+    "startLineIndex": 5,
+    "headingText": "## Session Tokens"
+  },
+  "crossFileFinding": {
+    "anchorDocPath": "docs/auth-architecture.md",
+    "anchorSection": "## Session Tokens",
+    "contributingFiles": [
+      "src/auth/issuer.ts",
+      "src/auth/validator.ts"
+    ],
+    "description": "issuer.ts mints a 7200s TTL while validator.ts still rejects >3600s; the doc requires both to agree at 3600s. The contradiction is only detectable when both hunks are co-located with the ## Session Tokens section."
+  },
+  "concentratedCluster": {
+    "anchorSection": "## Session Tokens",
+    "rename": "SessionToken -> SessionTicket",
+    "fileCount": 10,
+    "files": [
+      "src/auth/store.ts",
+      "src/auth/middleware.ts",
+      "src/auth/context.ts",
+      "src/auth/guards.ts",
+      "src/auth/refresh.ts",
+      "src/auth/introspect.ts",
+      "src/auth/session-cache.ts",
+      "src/auth/types.ts",
+      "src/auth/serialize.ts",
+      "src/auth/cookie.ts"
+    ]
+  },
+  "spreadFindings": [
+    {
+      "anchorSection": "## Token Rotation",
+      "files": [
+        "src/auth/rotation.ts"
+      ],
+      "drift": "900s -> 1800s"
+    },
+    {
+      "anchorSection": "## Rate Limiting",
+      "files": [
+        "src/auth/rate-limit.ts"
+      ],
+      "drift": "100rpm -> 200rpm"
+    }
+  ]
+}

@@ -6,11 +6,37 @@ import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import {
   analysisSchema,
   buildPrompt,
+  estimatePromptTokens,
+  mergeAnalysisResults,
+  planPrompts,
   validateAndReconcile,
 } from '@delfini/drift-engine'
 import type { AnalysisInput, AnalysisResult } from '@delfini/drift-engine'
 import type { AnalysisOrchestrator } from '../../ports/orchestrator.js'
 import { createChatModel } from './model.js'
+
+// Structural view of `model.withStructuredOutput(...)` — a runnable that takes
+// the prompt string and resolves the (unvalidated) tool-call object. Both the
+// real LangChain Runnable and the test fake satisfy this shape.
+interface StructuredModel {
+  invoke(prompt: string): Promise<unknown>
+}
+
+// Per-prompt token budget + routing threshold for the multi-prompt fallback
+// (docs/ideas/multi-prompt-diff-analysis.md). When the assembled prompt exceeds
+// the budget the orchestrator splits the analysis across several budget-sized
+// prompts via `planPrompts` and merges the per-chunk results — the SAME
+// drift-engine primitives the Skill's `local-prepare` / `local-finalize` use,
+// so a finding the Skill surfaces locally is the finding the Action surfaces on
+// the PR (parity by construction). The values DELIBERATELY mirror the CLI's
+// `PROMPT_TOKEN_BUDGET` (150k) and `DEFAULT_RELEVANCE_THRESHOLD` (5) so both
+// surfaces split at the same point; action-core cannot import from
+// `@delfini/cli`, so they are duplicated here and must move in lockstep. The
+// 1M-context model could swallow more in one call, but matching the Skill's
+// split point is the parity choice. Override via the constructor for tests /
+// operators who want a different split point.
+export const ANALYSIS_PROMPT_TOKEN_BUDGET = 150_000
+export const ANALYSIS_RELEVANCE_THRESHOLD = 5
 
 // Resolve the canonical prompt template. drift-engine is pure-logic (no
 // I/O); action-core loads the template here and passes it into
@@ -57,31 +83,81 @@ export function loadTemplate(): string {
 
 export class SingleCallOrchestrator implements AnalysisOrchestrator {
   private readonly model: BaseChatModel
+  private readonly budget: number
+  private readonly threshold: number
 
-  constructor(model: BaseChatModel = createChatModel()) {
+  constructor(
+    model: BaseChatModel = createChatModel(),
+    options: { promptTokenBudget?: number; relevanceThreshold?: number } = {},
+  ) {
     this.model = model
+    this.budget = options.promptTokenBudget ?? ANALYSIS_PROMPT_TOKEN_BUDGET
+    this.threshold = options.relevanceThreshold ?? ANALYSIS_RELEVANCE_THRESHOLD
   }
 
   async analyze(input: AnalysisInput): Promise<AnalysisResult> {
-    const prompt = buildPrompt(input, loadTemplate())
     const structured = this.model.withStructuredOutput(analysisSchema, {
       name: 'AnalysisResult',
+    }) as StructuredModel
+    const warn = (message: string): void => core.warning(message)
+
+    // Fast path — the whole prompt fits one call. Identical to the pre-multi-
+    // prompt behaviour (buildPrompt with no retrieval options → one LLM call →
+    // reconcile), so existing single-call runs are unchanged.
+    const wholePrompt = buildPrompt(input, loadTemplate())
+    if (estimatePromptTokens(wholePrompt) <= this.budget) {
+      const result = await this.invokeWithRetry(structured, wholePrompt)
+      return validateAndReconcile(result, input.docs, warn)
+    }
+
+    // Over budget — split the analysis across budget-sized prompts (the same
+    // `planPrompts` the Skill's `local-prepare` uses) and merge the per-chunk
+    // reconciled results (the same `mergeAnalysisResults` the Skill's
+    // `local-finalize` uses). Parity by construction: both surfaces route the
+    // diff and dedup findings identically.
+    const plan = planPrompts(input, loadTemplate(), {
+      promptTokenBudget: this.budget,
+      relevanceThreshold: this.threshold,
     })
 
-    let result: unknown
+    // Degenerate: the planner could not split (no routing signal, or nothing
+    // fits) — send the whole prompt anyway. The 1M-context model may still
+    // accept it; failing loud beats silently analysing nothing.
+    if (!plan.split) {
+      const result = await this.invokeWithRetry(structured, wholePrompt)
+      return validateAndReconcile(result, input.docs, warn)
+    }
+
+    if (plan.oversizedSections.length > 0) {
+      core.warning(
+        `Delfini split this PR into ${plan.chunks.length} analysis prompts; ` +
+          `${plan.oversizedSections.length} doc section(s) attracted more diff than one prompt holds — ` +
+          `cross-file drift spanning those splits may be missed.`,
+      )
+    }
+
+    // Reconcile each chunk against the FULL doc set (line numbers are absolute,
+    // so grounding is chunk-independent), then merge + dedup across chunks.
+    const results: AnalysisResult[] = []
+    for (const chunk of plan.chunks) {
+      const raw = await this.invokeWithRetry(structured, chunk.prompt)
+      results.push(validateAndReconcile(raw, input.docs, warn))
+    }
+    return mergeAnalysisResults(results, warn)
+  }
+
+  // One LLM call with a single retry. On a second failure, an empty `{}`
+  // tool-call (Anthropic degradation) is rethrown with a CLEAN message so the
+  // pipeline's outer catch surfaces an informative neutral check via NFR42 —
+  // silent PASS would be wrong for a drift detector. Any other error
+  // propagates verbatim (real schema regressions stay visible).
+  private async invokeWithRetry(structured: StructuredModel, prompt: string): Promise<unknown> {
     try {
-      result = await structured.invoke(prompt)
+      return await structured.invoke(prompt)
     } catch {
       try {
-        result = await structured.invoke(prompt)
+        return await structured.invoke(prompt)
       } catch (err) {
-        // When the LLM call exhausts both attempts, surface a CLEAN message
-        // instead of letting LangChain's raw Zod blob bubble all the way to
-        // the PR comment. The pipeline's outer `catch` still emits a neutral
-        // `action_required` check via NFR42 — silent PASS would be wrong for
-        // a drift detector (a degraded LLM that calls the tool with `{}` is
-        // indistinguishable from a clean PR from the outside, and the user
-        // has no way to know analysis didn't actually run).
         if (isEmptyStructuredOutput(err)) {
           throw new Error(
             'LLM returned an empty structured-output response (called the ' +
@@ -92,12 +168,6 @@ export class SingleCallOrchestrator implements AnalysisOrchestrator {
         throw err
       }
     }
-
-    // Single composed reconciliation pipeline (line-number grounding,
-    // actionability filter, overlap dedup, additive-anchor grounding) imported
-    // from `@delfini/drift-engine`. `core.warning` surfaces drops in the
-    // Actions log so silent-drop rate stays observable.
-    return validateAndReconcile(result, input.docs, (message) => core.warning(message))
   }
 }
 

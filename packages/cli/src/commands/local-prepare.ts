@@ -20,7 +20,7 @@
 // this file via the packages/cli/src/**/*.ts rule. The command is pure
 // git + filesystem + drift-engine; no LLM client.
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { promises as fs } from 'node:fs'
 import { execFile } from 'node:child_process'
 import path from 'node:path'
@@ -34,11 +34,13 @@ import {
   buildPromptWithDrops,
   estimatePromptTokens,
   filterDiff,
+  planPrompts,
 } from '@delfini/drift-engine'
 import type {
   AnalysisInput,
   DocFile,
   FilterDiffResult,
+  PlanPromptsResult,
   PRMetadata,
 } from '@delfini/drift-engine'
 
@@ -336,12 +338,31 @@ export async function runLocalPrepare(options: RunLocalPrepareOptions = {}): Pro
   const droppedSections = buildResult.droppedSections
   const estimatedTokens = estimatePromptTokens(prompt)
   if (estimatedTokens > budget) {
-    // Residual exit-4: the assembled prompt is over budget even after ranked-
-    // fill (when retrieval is on). With the conservative section-cost measure
-    // (drift-engine never under-counts the per-doc wrapper) this means either
-    // the non-doc payload alone (diff + schema + instructions) exceeds budget,
-    // or no candidate section fits in the residual budget — narrowing scope
-    // alone may not help, so the suggestion covers diff-shrinking too.
+    // Over budget even after ranked-fill trimmed the doc side — so the DIFF is
+    // what overflows. Before the hard exit-4 dead end, try the multi-prompt
+    // planner (FR152+ / docs/ideas/multi-prompt-diff-analysis.md): split the
+    // analysis across several budget-sized prompts routed by doc section. We
+    // need a positive relevance threshold to route hunks to sections; without
+    // one (default-off path, or `--relevance-threshold 0`) the planner cannot
+    // split and the legacy exit-4 fires verbatim (NFR44/AC8 parity preserved).
+    if (useRankedFill) {
+      const plan = planPrompts(input, loadTemplate(), {
+        promptTokenBudget: budget,
+        relevanceThreshold: options.relevanceThreshold as number,
+      })
+      // The split is only worth taking if it produced at least one chunk that
+      // actually FITS the budget. When every chunk is still over budget (e.g. a
+      // budget so tiny even the template + one section overflows) splitting
+      // bought nothing — fall through to exit 4, preserving the existing
+      // "tiny budget → prompt_too_large" tests.
+      if (plan.split && plan.chunks.some((c) => !c.overBudget)) {
+        return emitSplitArtifacts(repoRoot, input, plan, filterResult, stderr)
+      }
+    }
+    // Residual exit-4: no usable split. Either the non-doc payload alone (diff +
+    // schema + instructions) exceeds budget, or no candidate section fits —
+    // narrowing scope alone may not help, so the suggestion covers diff-
+    // shrinking too.
     const payload = {
       error: 'prompt_too_large',
       estimatedTokens,
@@ -386,8 +407,105 @@ export async function runLocalPrepare(options: RunLocalPrepareOptions = {}): Pro
   writeTraceFile(repoRoot, 'analysis-input.json', `${JSON.stringify(traceJson, null, 2)}\n`)
   writeTraceFile(repoRoot, 'analysis-prompt.md', prompt)
   writeTraceFile(repoRoot, 'schema.json', `${JSON.stringify(schemaJson, null, 2)}\n`)
+  // Single-prompt run — clear any stale multi-prompt manifest from a previous
+  // over-budget run so `local-finalize` (and the SKILL) don't mistake this for
+  // a split run. `chunks.json`'s presence is the multi-mode signal.
+  removeTraceFileIfExists(repoRoot, CHUNKS_MANIFEST_FILENAME)
 
   return 0
+}
+
+// -- Multi-prompt split artefacts (over-budget fallback) ---------------------
+
+// The manifest filename whose PRESENCE signals multi-prompt mode to
+// `local-finalize` and the SKILL. Single-prompt runs delete it (above).
+export const CHUNKS_MANIFEST_FILENAME = 'chunks.json'
+
+/**
+ * Write the artefacts for a multi-prompt split and return exit 0.
+ *
+ * - `analysis-input.json` — the FULL input (all docs) so `local-finalize` can
+ *   ground every chunk's findings against the complete doc bodies, plus a
+ *   `_planResult` metadata sibling (oversized sections, dropped hunk files).
+ * - `analysis-prompt-<k>.md` — one dispatch-ready prompt per chunk.
+ * - `schema.json` — shared output schema (identical for every chunk).
+ * - `chunks.json` — the manifest the SKILL loops over.
+ *
+ * A single fitting chunk collapses to the normal single-prompt layout
+ * (`analysis-prompt.md`, no manifest) so the SKILL stays on its simple path.
+ */
+function emitSplitArtifacts(
+  repoRoot: string,
+  input: AnalysisInput,
+  plan: PlanPromptsResult,
+  filterResult: FilterDiffResult | null,
+  stderr: NodeJS.WritableStream,
+): number {
+  ensureTraceDir(repoRoot)
+  const schemaJson = zodToJsonSchema(analysisSchema)
+
+  // analysis-input.json — full input + additive metadata siblings. Mirrors the
+  // single-prompt trace shape; subagents read only diff/docs/prMetadata.
+  const traceJson: Record<string, unknown> = { ...input }
+  if (filterResult !== null) {
+    traceJson._filterResult = {
+      droppedPaths: filterResult.droppedPaths,
+      droppedHunks: filterResult.droppedHunks,
+    }
+  }
+  traceJson._planResult = {
+    chunkCount: plan.chunks.length,
+    oversizedSections: plan.oversizedSections,
+    droppedHunkFilePaths: plan.droppedHunkFilePaths,
+  }
+  writeTraceFile(repoRoot, 'analysis-input.json', `${JSON.stringify(traceJson, null, 2)}\n`)
+  writeTraceFile(repoRoot, 'schema.json', `${JSON.stringify(schemaJson, null, 2)}\n`)
+
+  // Single fitting chunk → normal single-prompt layout (no manifest).
+  if (plan.chunks.length === 1) {
+    writeTraceFile(repoRoot, 'analysis-prompt.md', plan.chunks[0].prompt)
+    removeTraceFileIfExists(repoRoot, CHUNKS_MANIFEST_FILENAME)
+    if (plan.droppedHunkFilePaths.length > 0) {
+      stderr.write(
+        `dropped ${plan.droppedHunkFilePaths.length} unrelated changed file(s) from the diff — not relevant to any in-scope doc section\n`,
+      )
+    }
+    return 0
+  }
+
+  // Multi-prompt layout: one prompt file per chunk + the manifest.
+  const prompts = plan.chunks.map((_, k) => `analysis-prompt-${k}.md`)
+  plan.chunks.forEach((chunk, k) => {
+    writeTraceFile(repoRoot, prompts[k], chunk.prompt)
+  })
+  const manifest = {
+    version: 1,
+    chunkCount: plan.chunks.length,
+    prompts,
+    oversizedSections: plan.oversizedSections,
+    droppedHunkFilePaths: plan.droppedHunkFilePaths,
+  }
+  writeTraceFile(repoRoot, CHUNKS_MANIFEST_FILENAME, `${JSON.stringify(manifest, null, 2)}\n`)
+
+  // One human-readable header. The diff was too large for one prompt, so it was
+  // split; surface the count, any oversized sections, and dropped files.
+  const oversizedNote =
+    plan.oversizedSections.length > 0
+      ? ` (${plan.oversizedSections.length} section(s) too large to keep whole — those prompts may exceed budget)`
+      : ''
+  const droppedNote =
+    plan.droppedHunkFilePaths.length > 0
+      ? `; dropped ${plan.droppedHunkFilePaths.length} unrelated changed file(s)`
+      : ''
+  stderr.write(
+    `diff too large for one prompt — split into ${plan.chunks.length} prompts${oversizedNote}${droppedNote}\n`,
+  )
+  return 0
+}
+
+function removeTraceFileIfExists(repoRoot: string, filename: string): void {
+  const target = path.join(repoRoot, '.delfini-trace', filename)
+  if (existsSync(target)) rmSync(target)
 }
 
 // -- Scope resolution --------------------------------------------------------

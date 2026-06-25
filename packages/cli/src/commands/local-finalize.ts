@@ -29,7 +29,7 @@ import path from 'node:path'
 
 import { z, ZodError } from 'zod'
 
-import { validateAndReconcile } from '@delfini/drift-engine'
+import { mergeAnalysisResults, validateAndReconcile } from '@delfini/drift-engine'
 import type {
   Addition,
   AnalysisResult,
@@ -41,6 +41,7 @@ import type {
 
 import { getRepoRoot } from '../git.js'
 import { writeTraceFile } from '../trace.js'
+import { CHUNKS_MANIFEST_FILENAME } from './local-prepare.js'
 
 // ---------------------------------------------------------------------------
 // Constants — match the AC4 / AC5 / AC6 / AC7 contract exactly.
@@ -124,6 +125,20 @@ export async function runLocalFinalize(
   const findingsPath = path.isAbsolute(options.findingsPath)
     ? options.findingsPath
     : path.join(repoRoot, options.findingsPath)
+
+  // -- Multi-prompt mode: a DIRECTORY argument means "the trace dir of a split
+  //    run" (over-budget diff → `local-prepare` wrote `chunks.json` + N
+  //    findings files). Loop the chunks, reconcile each against the full docs,
+  //    and merge. A plain findings.json FILE keeps the single-prompt path below.
+  let findingsIsDir = false
+  try {
+    findingsIsDir = (await fs.stat(findingsPath)).isDirectory()
+  } catch {
+    findingsIsDir = false
+  }
+  if (findingsIsDir) {
+    return runMultiFinalize(findingsPath, repoRoot, stdout, stderr)
+  }
 
   // -- Step 2: Read + parse findings.json ----------------------------------
   let findingsContent: string
@@ -226,9 +241,143 @@ export async function runLocalFinalize(
   // message is acceptable when only clarifications surface, since the
   // clarification path requires a human-only resolution and the trace
   // artefacts remain on disk for the user to inspect).
+  return decideExitCode(result)
+}
+
+// Exit 1 fires whenever the user has something to act on — apply-eligible
+// drift/additive findings OR narrative-only drifts (manual triage). Shared by
+// the single-prompt and multi-prompt paths.
+function decideExitCode(result: AnalysisResult): number {
   const hasApplyEligible = result.contradictions.length > 0 || result.additions.length > 0
   const hasNarrativeOnly = (result.narrativeOnlyContradictions ?? []).length > 0
   return hasApplyEligible || hasNarrativeOnly ? 1 : 0
+}
+
+// ---------------------------------------------------------------------------
+// Multi-prompt finalize — fold N per-chunk findings into one merged report.
+//
+// Triggered when `local-finalize` is given the trace DIRECTORY (a split run
+// wrote `chunks.json`). Each `findings-<k>.json` is reconciled against the full
+// doc set (line numbers are absolute, so grounding is chunk-independent) and the
+// per-chunk results are merged via `mergeAnalysisResults`. Chunks that fail
+// schema validation are collected and reported together as `failedChunks` so
+// the SKILL can re-dispatch only the broken ones (per-chunk retry).
+// ---------------------------------------------------------------------------
+
+async function runMultiFinalize(
+  traceDir: string,
+  repoRoot: string,
+  stdout: NodeJS.WritableStream,
+  stderr: NodeJS.WritableStream,
+): Promise<number> {
+  // -- Read the manifest (chunk count) written by `local-prepare`.
+  let chunkCount: number
+  try {
+    const parsed = JSON.parse(
+      await fs.readFile(path.join(traceDir, CHUNKS_MANIFEST_FILENAME), 'utf8'),
+    ) as { chunkCount?: unknown }
+    if (
+      typeof parsed.chunkCount !== 'number' ||
+      !Number.isInteger(parsed.chunkCount) ||
+      parsed.chunkCount < 1
+    ) {
+      return emitSchemaValidationError(stderr, [
+        {
+          path: CHUNKS_MANIFEST_FILENAME,
+          message: 'chunks.json is missing a valid "chunkCount". Re-run `delfini local-prepare`.',
+        },
+      ])
+    }
+    chunkCount = parsed.chunkCount
+  } catch (err) {
+    return emitSchemaValidationError(stderr, [
+      {
+        path: CHUNKS_MANIFEST_FILENAME,
+        message: `Failed to read chunks.json in "${traceDir}": ${formatErrorMessage(err)}. Run \`delfini local-prepare\` first.`,
+      },
+    ])
+  }
+
+  // -- Recover the full doc set for grounding.
+  let docs: DocFile[]
+  try {
+    const parsed = JSON.parse(
+      await fs.readFile(path.join(traceDir, ANALYSIS_INPUT_FILENAME), 'utf8'),
+    ) as { docs?: unknown }
+    if (!Array.isArray(parsed.docs)) {
+      return emitSchemaValidationError(stderr, [
+        {
+          path: ANALYSIS_INPUT_FILENAME,
+          message: 'analysis-input.json is missing the "docs" array. Re-run `delfini local-prepare`.',
+        },
+      ])
+    }
+    docs = parsed.docs as DocFile[]
+  } catch (err) {
+    return emitSchemaValidationError(stderr, [
+      {
+        path: ANALYSIS_INPUT_FILENAME,
+        message: `Failed to read analysis-input.json in "${traceDir}": ${formatErrorMessage(err)}.`,
+      },
+    ])
+  }
+
+  // -- Reconcile each chunk; collect schema failures for per-chunk retry.
+  const results: AnalysisResult[] = []
+  const clarifications: ClarifyingQuestion[] = []
+  const failedChunks: { chunk: number; issues: SchemaValidationIssue[] }[] = []
+
+  for (let k = 0; k < chunkCount; k++) {
+    const file = path.join(traceDir, `findings-${k}.json`)
+    let rawJson: unknown
+    try {
+      rawJson = JSON.parse(await fs.readFile(file, 'utf8'))
+    } catch (err) {
+      failedChunks.push({
+        chunk: k,
+        issues: [{ path: `findings-${k}.json`, message: `Failed to read/parse: ${formatErrorMessage(err)}` }],
+      })
+      continue
+    }
+    try {
+      clarifications.push(
+        ...ClarifyingQuestionsArraySchema.parse(extractClarifyingQuestionsField(rawJson)),
+      )
+    } catch (err) {
+      if (err instanceof ZodError) {
+        failedChunks.push({ chunk: k, issues: formatZodIssues(err, 'clarifyingQuestions') })
+        continue
+      }
+      throw err
+    }
+    try {
+      results.push(
+        validateAndReconcile(rawJson, docs, (message) => {
+          stderr.write(`⚠️  [chunk ${k}] ${message}\n`)
+        }),
+      )
+    } catch (err) {
+      if (err instanceof ZodError) {
+        failedChunks.push({ chunk: k, issues: formatZodIssues(err) })
+        continue
+      }
+      throw err
+    }
+  }
+
+  if (failedChunks.length > 0) {
+    // Distinct payload shape from the single-mode `{ error, issues }` — the
+    // SKILL keys off `failedChunks[].chunk` to re-dispatch only the broken
+    // prompts (analysis-prompt-<chunk>.md) rather than the whole batch.
+    stderr.write(`${JSON.stringify({ error: 'schema_validation', failedChunks }, null, 2)}\n`)
+    return 3
+  }
+
+  const merged = mergeAnalysisResults(results, (message) => stderr.write(`⚠️  ${message}\n`))
+  const report = renderReport(merged, clarifications)
+  writeTraceFile(repoRoot, REPORT_FILENAME, report)
+  stdout.write(report.endsWith('\n') ? report : `${report}\n`)
+  return decideExitCode(merged)
 }
 
 // ---------------------------------------------------------------------------

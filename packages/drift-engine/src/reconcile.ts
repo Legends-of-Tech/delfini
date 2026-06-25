@@ -367,3 +367,75 @@ export function validateAndReconcile(
     ...(narrativeOnly.length > 0 ? { narrativeOnlyContradictions: narrativeOnly } : {}),
   }
 }
+
+// Multi-prompt merge (design: docs/ideas/multi-prompt-diff-analysis.md). When an
+// over-budget analysis is split into N chunks by `planPrompts`, each chunk is
+// dispatched separately and its raw JSON is run through `validateAndReconcile`
+// against that chunk's docs — yielding N already-grounded `AnalysisResult`s.
+// This folds them into ONE.
+//
+// The same finding can legitimately surface in more than one chunk: a doc
+// SECTION relevant to hunks in two chunks is rendered into both, so the LLM may
+// flag the same doc line twice. Dedup re-uses the EXISTING overlap pass for
+// contradictions — `dedupeOverlappingContradictions` keys on
+// `(targetDocPath, overlapping [targetLineStart..targetLineEnd])` and keeps the
+// highest-confidence finding, which is exactly the cross-chunk-duplicate case
+// (identical ranges overlap trivially). Because inputs are already reconciled,
+// merge needs no doc bodies.
+//
+// Additions and narrative-only contradictions are exact-deduped (the overlap
+// pass deliberately does not touch additives — see the L157 note — and narrative
+// entries never enter the splicer). A duplicate here is a byte-identical finding
+// emitted by two chunks; collapsing it prevents the Skill from offering the same
+// edit twice. Distinct findings on the same anchor are preserved.
+//
+// `rawConfidence` is the MAX across chunks: it is an overall-signal scalar, and
+// a high-confidence verdict from any chunk should not be diluted by averaging
+// against chunks that happened to see unrelated slices of the diff.
+export function mergeAnalysisResults(
+  results: AnalysisResult[],
+  onWarn: WarnFn = () => {},
+): AnalysisResult {
+  const dedupedContradictions = dedupeOverlappingContradictions(
+    results.flatMap((r) => r.contradictions),
+    onWarn,
+  )
+  const additions = dedupeExact(
+    results.flatMap((r) => r.additions),
+    (a) => `${a.targetDocPath}\u0000${a.anchorLine}\u0000${a.insertionMode}\u0000${a.proposedContent}`,
+    (a) =>
+      onWarn(
+        `Merge dropped duplicate additive finding for "${a.targetDocPath}" at line ${a.anchorLine} (${a.insertionMode}) — identical content already merged from another chunk.`,
+      ),
+  )
+  const narrativeOnly = dedupeExact(
+    results.flatMap((r) => r.narrativeOnlyContradictions ?? []),
+    (c) => `${c.targetDocPath}\u0000${c.targetLineStart}\u0000${c.targetLineEnd}\u0000${c.whatContradicts}`,
+    () => {},
+  )
+  const rawConfidence = results.length > 0 ? Math.max(...results.map((r) => r.rawConfidence)) : 0
+
+  return {
+    contradictions: dedupedContradictions,
+    additions,
+    rawConfidence,
+    ...(narrativeOnly.length > 0 ? { narrativeOnlyContradictions: narrativeOnly } : {}),
+  }
+}
+
+// Keep the FIRST occurrence per key; report each later duplicate via `onDrop`.
+// Order-preserving and deterministic (first-seen wins).
+function dedupeExact<T>(items: T[], key: (item: T) => string, onDrop: (item: T) => void): T[] {
+  const seen = new Set<string>()
+  const out: T[] = []
+  for (const item of items) {
+    const k = key(item)
+    if (seen.has(k)) {
+      onDrop(item)
+      continue
+    }
+    seen.add(k)
+    out.push(item)
+  }
+  return out
+}
