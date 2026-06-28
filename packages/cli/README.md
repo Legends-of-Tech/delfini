@@ -36,6 +36,8 @@ Scaffold the Skill into a repo (idempotent — safe to re-run).
 
 - `<path>` — repo root or any subdirectory; resolves up to the git root.
 - Writes `.claude/skills/delfini/SKILL.md`, appends a `/delfini` block to `CLAUDE.md` (creating it if absent, never duplicating), and adds `.delfini-trace/` to `.gitignore`.
+- Always creates `.claude/skills/delfini/delfini-config.json` with both `doc_scope` and `ignore_code_scope` fields (empty arrays when prompts are skipped or stdin is non-TTY), giving the team a committed, hand-editable template.
+- `--ignore-code-scope <paths>` — seed `ignore_code_scope` without prompting (mirrors `--scope`).
 
 ### `delfini local-prepare [--scope <paths>] [--ignore-code-scope <paths>] [--base <ref>] [--relevance-threshold <N>]`
 

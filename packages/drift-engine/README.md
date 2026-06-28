@@ -23,7 +23,10 @@ npm install @delfini/drift-engine
 ```ts
 import {
   buildPrompt,             // (input, template, options?) => string
+  buildPromptWithDrops,    // (input, template, options?) => { prompt, droppedSections }
   validateAndReconcile,    // (rawJson, docs) => AnalysisResult
+  mergeAnalysisResults,    // (results, warn?) => AnalysisResult
+  planPrompts,             // (input, template, options?) => PlanPromptsResult
   estimatePromptTokens,    // (prompt) => number
   analysisSchema,          // Zod schema for the model's output
   // doc-scope matching:
@@ -37,6 +40,7 @@ import {
   type DocFile,
   type Contradiction,
   type Addition,
+  type PlanPromptsResult,
 } from '@delfini/drift-engine'
 ```
 
