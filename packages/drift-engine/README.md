@@ -27,6 +27,7 @@ import {
   validateAndReconcile,    // (rawJson, docs) => AnalysisResult
   mergeAnalysisResults,    // (results, warn?) => AnalysisResult
   planPrompts,             // (input, template, options?) => PlanPromptsResult
+  gateDiffByRelevance,     // (diff, docs, options) => DiffGateResult
   estimatePromptTokens,    // (prompt) => number
   analysisSchema,          // Zod schema for the model's output
   // doc-scope matching:
@@ -64,6 +65,10 @@ Each doc section is scored against the diff and sections below the threshold are
 | A heading overlaps a diff identifier | +5 per heading |
 
 A threshold of `5` keeps any section with a single file-path or heading match — a safe default that typically cuts prompt size ~40% on doc-heavy inputs with no measurable recall loss. Omit `options` (or pass `0`) to keep every section.
+
+## Diff-side gating (optional)
+
+`gateDiffByRelevance(diff, docs, { sectionThreshold, keepThreshold })` is the symmetric operation on the diff side, for consumer call-sites (the CLI and Action run it by default before prompt assembly). Every hunk is scored against the retained doc sections with the same tier formula; hunks below `keepThreshold` are dropped (reported in `droppedHunks`, never silently), weakly-linked hunks have leading/trailing context trimmed to one line, and structural signals — in-scope doc edits, brand-new files, dependency manifests — always survive. The gate stands down (returns the diff verbatim, `active: false`) rather than ever emitting an empty diff. The default `buildPrompt` path never calls it, so the canonical snapshot is unaffected.
 
 ## Runtime constraints
 

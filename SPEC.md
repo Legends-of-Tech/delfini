@@ -111,8 +111,10 @@ internal helpers leak): `buildPrompt`, `buildPromptWithDrops`, `validateAndRecon
 `mergeAnalysisResults`, `estimatePromptTokens`, `analysisSchema`, the doc-scope algebra (`normalizeDocScope`,
 `validateDocScopeEntry`, `classifyEntry`, `isFileInDocScope`), `filterDiff`, `rankedFillSections`, `planPrompts`
 (multi-prompt planner for over-budget diffs — splits into budget-sized chunks,
-single-chunk fast path is byte-identical to `buildPrompt`), plus the published
-types.
+single-chunk fast path is byte-identical to `buildPrompt`), `gateDiffByRelevance`
+(diff-side relevance gate — consumer call-sites drop hunks linked to no retained
+doc section before prompt assembly; default-on at the CLI flag layer and in the
+Action orchestrator), plus the published types.
 
 ## Code Style
 
@@ -231,6 +233,7 @@ and this glossary ever disagree, the code (and its tests) win; fix the glossary.
 | **FR150** | **Section-granularity retrieval** — a positive `relevanceThreshold` reduces each doc to its relevant heading-delimited sections; docs with no surviving section are omitted. Threshold 0/undefined → whole-doc render (the NFR44 baseline). |
 | **FR151** | **Deterministic diff pre-filter** (`filterDiff`) — opt-in (`--enable-diff-prefilter`) drop of lockfile/generated/vendored/fixture paths + whitespace-only/import-only hunks before prompt assembly. Default off → byte-identical baseline. |
 | **FR152** | **Ranked-fill prompt budget** — with both a positive threshold and `promptTokenBudget`, retained sections are ranked most-relevant-first and included while the running token total stays at-or-below budget; the rest surface as `droppedSections` from `buildPromptWithDrops`. |
+| **Diff gate** | **Always-on diff-side relevance gating** (`gateDiffByRelevance`, docs/ideas/token-diet-symmetric-retrieval.md) — hunks scoring below `--diff-keep-threshold` (default: the effective relevance threshold) against every retained doc section are dropped before prompt assembly; weakly-linked hunks lose excess context; in-scope doc edits, new files, and dependency manifests always survive. Drops are reported (stderr `diff gate:` line, `_diffGateResult` trace sibling, Action `core.warning`) — never silent. The gate stands down rather than emit an empty diff, and the accepted lexical-recall hole is pinned by the committed `lexically-invisible` fixture. |
 | **FR88 (+ FR88d/FR88g)** | The structured single-call findings contract / analysis schema. `FR88d`/`FR88g` are **platform** wire contracts (intake POST / doc-scope fetch) — named here only to mark the boundary; absent from OSS artifacts. |
 | **FR134** | Runtime mode selection — **retired**. The OSS action is Lite-only; there is no mode branch. A supplied workspace token triggers the hard-fail guard (below). |
 | **FR135** | The **Lite pipeline** — standalone analysis with no platform: doc scope from the `doc_scope` input only, GitHub check state from the verdict, one rich PR comment as the sole finding surface. |
