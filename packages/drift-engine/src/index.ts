@@ -90,6 +90,17 @@ export type {
   RankedFillResult,
 } from './relevance.js'
 
+// Always-on diff-side relevance gate
+// (docs/ideas/token-diet-symmetric-retrieval.md). Symmetric completion of
+// NFR49's default-on doc retrieval: hunks linked to no retained section are
+// dropped (reported, never silent) and weakly-linked hunks lose excess
+// context — BEFORE prompt assembly, at any prompt size, not just the
+// over-budget planner path. Exported because — like `filterDiff` and
+// `planPrompts` — the gate lives at the consumer call-sites (CLI
+// `runLocalPrepare`, Action `SingleCallOrchestrator`); the default
+// `buildPrompt` path never calls it, so the NFR44 snapshot gate is untouched.
+export { gateDiffByRelevance } from './diff-gate.js'
+
 export type {
   PlanPromptsOptions,
   PlanPromptsResult,
@@ -98,3 +109,11 @@ export type {
 } from './prompt-planner.js'
 
 export type { DiffHunk } from './diff-hunks.js'
+
+export type {
+  DiffGateOptions,
+  DiffGateResult,
+  DroppedGateHunk,
+  GateInactiveReason,
+  GateKeepReason,
+} from './diff-gate.js'

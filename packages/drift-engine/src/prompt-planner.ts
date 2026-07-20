@@ -25,7 +25,7 @@ import type { AnalysisInput, DocFile } from './types.js'
 import { buildPrompt } from './prompt-builder.js'
 import { estimatePromptTokens } from './prompt-budget.js'
 import {
-  scoreDocRelevance,
+  scoreSectionAgainstHunk,
   selectRelevantSections,
   type DocSection,
 } from './relevance.js'
@@ -236,20 +236,10 @@ function buildWorkItems(
   return items
 }
 
-// Score one section against one hunk by reusing the whole-doc scorer on a
-// synthetic single-section doc — mirrors `prompt-builder.ts`'s
-// `scoreSectionAgainstDiff` so routing uses the EXACT production tier formula
-// (any future change to the scoring formula propagates here automatically). The
-// synthetic doc's `frontMatterLineCount` carries the section offset so the
-// `docPathInDiff` whole-doc tier still behaves correctly.
-function scoreSectionAgainstHunk(doc: DocFile, section: DocSection, hunk: DiffHunk): number {
-  const synthetic: DocFile = {
-    path: doc.path,
-    content: section.lines.join('\n'),
-    frontMatterLineCount: doc.frontMatterLineCount + section.startLineIndex,
-  }
-  return scoreDocRelevance(synthetic, renderHunksAsDiff([hunk])).score
-}
+// Per-(section, hunk) scoring is the shared `scoreSectionAgainstHunk` from
+// `relevance.ts` — the same call the diff gate (`diff-gate.ts`) uses for its
+// keep/drop decision, so routing and gating can never disagree on a hunk's
+// relevance to a section.
 
 // --- Chunk rendering --------------------------------------------------------
 
