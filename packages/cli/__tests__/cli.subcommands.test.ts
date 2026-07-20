@@ -441,6 +441,112 @@ describe('cli.ts — `local-prepare` subcommand', () => {
       await rmrf(repo, originalCwd)
     }
   })
+
+  // Diff-side gate default (docs/ideas/token-diet-symmetric-retrieval.md):
+  // `--diff-keep-threshold` follows the effective `--relevance-threshold`
+  // when omitted, so a bare run gates the DIFF side too — an unlinked hunk is
+  // dropped from the prompt. `--diff-keep-threshold 0` opts back out while
+  // retrieval stays on. Cross-flag resolution lives in the cli.ts action
+  // handler (commander cannot express it); these two cases pin it.
+  async function seedGateRepo(repo: string): Promise<string> {
+    await fs.mkdir(path.join(repo, 'docs'), { recursive: true })
+    await fs.mkdir(path.join(repo, 'src'), { recursive: true })
+    await fs.writeFile(
+      path.join(repo, 'docs', 'relevant.md'),
+      '# Relevant\n\nThe module src/x.ts is documented here.\n',
+      'utf8',
+    )
+    await fs.writeFile(path.join(repo, 'src', 'x.ts'), 'export const a = 1\n', 'utf8')
+    await fs.writeFile(path.join(repo, 'src', 'noise.ts'), 'export const zebraCount = 1\n', 'utf8')
+    const git = simpleGit({ baseDir: repo })
+    await git.add('.')
+    await git.commit('initial')
+    // Change BOTH files: x.ts links to the doc (path overlap), noise.ts
+    // shares no lexical signal with any section.
+    await fs.writeFile(path.join(repo, 'src', 'x.ts'), 'export const a = 2\n', 'utf8')
+    await fs.writeFile(path.join(repo, 'src', 'noise.ts'), 'export const zebraCount = 2\n', 'utf8')
+    const git2 = simpleGit({ baseDir: repo })
+    await git2.add('.')
+    await git2.commit('change both')
+    const base = await git2.raw(['rev-parse', 'HEAD~1'])
+    return base.trim()
+  }
+
+  it('default (no --diff-keep-threshold) gates the diff — unlinked hunk dropped', async () => {
+    const repo = await makeTempGitRepo()
+    const exitCodeBefore = process.exitCode
+    try {
+      process.chdir(repo)
+      const base = await seedGateRepo(repo)
+
+      vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+      await main([
+        'node',
+        'delfini',
+        'local-prepare',
+        '--scope',
+        'docs/',
+        '--base',
+        base,
+        '--diff-source',
+        'committed',
+      ])
+
+      expect(process.exitCode).toBe(0)
+      const prompt = await fs.readFile(
+        path.join(repo, '.delfini-trace', 'analysis-prompt.md'),
+        'utf8',
+      )
+      expect(prompt).toContain('src/x.ts')
+      expect(prompt).not.toContain('src/noise.ts')
+      const stderrText = stderrSpy.mock.calls.map((c) => String(c[0])).join('')
+      expect(stderrText).toMatch(/diff gate: dropped 1 unrelated hunk\(s\)/)
+    } finally {
+      process.exitCode = exitCodeBefore
+      await rmrf(repo, originalCwd)
+    }
+  })
+
+  it('--diff-keep-threshold 0 opts out of diff gating while retrieval stays on', async () => {
+    const repo = await makeTempGitRepo()
+    const exitCodeBefore = process.exitCode
+    try {
+      process.chdir(repo)
+      const base = await seedGateRepo(repo)
+
+      vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+      vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+      await main([
+        'node',
+        'delfini',
+        'local-prepare',
+        '--scope',
+        'docs/',
+        '--base',
+        base,
+        '--diff-source',
+        'committed',
+        '--diff-keep-threshold',
+        '0',
+      ])
+
+      expect(process.exitCode).toBe(0)
+      const prompt = await fs.readFile(
+        path.join(repo, '.delfini-trace', 'analysis-prompt.md'),
+        'utf8',
+      )
+      // Full diff survives; doc-side retrieval (still on) is untouched.
+      expect(prompt).toContain('src/x.ts')
+      expect(prompt).toContain('src/noise.ts')
+      expect(prompt).toContain('<document path="docs/relevant.md">')
+    } finally {
+      process.exitCode = exitCodeBefore
+      await rmrf(repo, originalCwd)
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------
