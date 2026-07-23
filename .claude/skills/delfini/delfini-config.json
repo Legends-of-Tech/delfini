@@ -1,0 +1,4 @@
+{
+  "version": 1,
+  "doc_scope": ["SPEC.md", "CONTRIBUTING.md", "README.md", "packages/*/README.md"]
+}

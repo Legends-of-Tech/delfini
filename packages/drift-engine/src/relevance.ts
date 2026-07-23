@@ -9,6 +9,7 @@
 // internal helpers.
 
 import type { DocFile } from './types.js'
+import { renderHunksAsDiff, type DiffHunk } from './diff-hunks.js'
 
 export interface DocRelevanceScore {
   path: string
@@ -243,6 +244,34 @@ export function selectRelevantSections(
     }
   }
   return { kept, dropped }
+}
+
+// --- Hunk-granularity section scoring ----------------------------------------
+
+/**
+ * Score one retained SECTION against one diff HUNK by reusing the whole-doc
+ * scorer on a synthetic single-section doc — the EXACT production tier formula
+ * (mirrors `prompt-builder.ts`'s `scoreSectionAgainstDiff`; any future formula
+ * change propagates automatically). The synthetic doc's `frontMatterLineCount`
+ * carries the section offset so the `docPathInDiff` whole-doc tier still
+ * behaves correctly.
+ *
+ * Lives here — the declared source of truth on scoring — and is SHARED by
+ * `prompt-planner.ts` (hunk→section chunk routing) and `diff-gate.ts`
+ * (per-hunk keep/drop). One formula, two consumers, no drift between the
+ * planner's routing decision and the gate's keep decision by construction.
+ */
+export function scoreSectionAgainstHunk(
+  doc: DocFile,
+  section: DocSection,
+  hunk: DiffHunk,
+): number {
+  const synthetic: DocFile = {
+    path: doc.path,
+    content: section.lines.join('\n'),
+    frontMatterLineCount: doc.frontMatterLineCount + section.startLineIndex,
+  }
+  return scoreDocRelevance(synthetic, renderHunksAsDiff([hunk])).score
 }
 
 // --- Ranked-fill prompt budget (FR152, Story P3.7.3) ------------------------

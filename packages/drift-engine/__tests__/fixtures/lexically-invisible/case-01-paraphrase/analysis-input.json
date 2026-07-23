@@ -1,0 +1,18 @@
+{
+  "diff": "diff --git a/src/payments/api.ts b/src/payments/api.ts\nindex 1111111..2222222 100644\n--- a/src/payments/api.ts\n+++ b/src/payments/api.ts\n@@ -3,3 +3,3 @@\n const cards = loadCards()\n-export const cardCharge = batchCharge(cards)\n+export const cardCharge = batchCharge(cards, retryPolicy)\n const done = true\ndiff --git a/src/config/timeouts.ts b/src/config/timeouts.ts\nindex 3333333..4444444 100644\n--- a/src/config/timeouts.ts\n+++ b/src/config/timeouts.ts\n@@ -1,2 +1,2 @@\n-export const IDLE_LIMIT_MS = 3600_000\n+export const IDLE_LIMIT_MS = 7200_000\n const noop = 0\n",
+  "docs": [
+    {
+      "path": "docs/policies.md",
+      "content": "# Product Policies\n\n## Payments\n\nAll card operations go through src/payments/api.ts using cardCharge batching.\n\n## Session lifetime\n\nSessions expire after one hour of inactivity. Users are signed out silently.\n",
+      "frontMatterLineCount": 0
+    }
+  ],
+  "prMetadata": {
+    "owner": "acme",
+    "repo": "widget",
+    "prNumber": 11,
+    "headSha": "abc1234",
+    "baseSha": "def5678",
+    "title": "Retry card charges; relax idle timeout"
+  }
+}

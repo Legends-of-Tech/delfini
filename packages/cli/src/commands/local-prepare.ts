@@ -6,6 +6,10 @@
 //   2. Expand each scope entry via expandDocScope() (P3.2.5 primitive)
 //   3. Compute diff via simple-git against --base (default merge-base HEAD origin/main)
 //   4. Read each in-scope doc from disk
+//   4b. Gate the diff by per-hunk relevance (gateDiffByRelevance — default-on
+//       at the cli.ts flag layer, docs/ideas/token-diet-symmetric-retrieval.md):
+//       hunks linked to no retained doc section are dropped (reported), weakly
+//       linked hunks lose excess context
 //   5. Call buildPrompt() from @delfini/drift-engine (pure-logic)
 //   6. estimatePromptTokens() — exit 4 with prompt_too_large JSON only when the
 //      non-doc payload alone exceeds budget; otherwise ranked-fill (P3.7.3) trims
@@ -31,13 +35,16 @@ import { z, type ZodTypeAny } from 'zod'
 
 import {
   analysisSchema,
+  buildPrompt,
   buildPromptWithDrops,
   estimatePromptTokens,
   filterDiff,
+  gateDiffByRelevance,
   planPrompts,
 } from '@delfini/drift-engine'
 import type {
   AnalysisInput,
+  DiffGateResult,
   DocFile,
   FilterDiffResult,
   PlanPromptsResult,
@@ -205,6 +212,21 @@ export interface RunLocalPrepareOptions {
    */
   relevanceThreshold?: number
   /**
+   * Per-hunk keep bar for the diff-side relevance gate
+   * (docs/ideas/token-diet-symmetric-retrieval.md). When BOTH this AND
+   * `relevanceThreshold` are positive, hunks whose best score against any
+   * retained doc section falls below this value are dropped from the analysed
+   * diff before prompt assembly (structural keeps — in-scope doc edits, new
+   * files, dependency manifests — always survive), and weakly-linked kept
+   * hunks have leading/trailing context trimmed. Default behaviour
+   * (undefined or 0) is observably no-op — `runLocalPrepare` stays a pure
+   * pass-through, same NFR49(b) discipline as `relevanceThreshold`: the
+   * default-ON lives at the cli.ts flag layer, which resolves
+   * `--diff-keep-threshold` to the effective `--relevance-threshold` when the
+   * flag is omitted.
+   */
+  diffKeepThreshold?: number
+  /**
    * Opt-in deterministic diff pre-filter (Story P3.7.2 / FR151). When `true`,
    * drops lockfile / generated / vendored / fixture paths plus pure
    * whitespace-only and import-only hunks BEFORE prompt assembly. Default
@@ -305,6 +327,48 @@ export async function runLocalPrepare(options: RunLocalPrepareOptions = {}): Pro
   //    Skill path does not need `.delfini`-style ignore semantics.
   const docs = await readDocs(expansion.files, repoRoot, stderr)
 
+  // 4b. Diff-side relevance gate (docs/ideas/token-diet-symmetric-retrieval.md).
+  //     Runs only when BOTH thresholds are positive — the gate needs the
+  //     retained-section universe (`relevanceThreshold`) as its routing signal,
+  //     exactly like `planPrompts`. The engine stands down (verbatim diff) on
+  //     its own degenerate cases (no sections / all hunks dropped), so `diff`
+  //     is only ever replaced by a NON-empty gated diff. Runs BEFORE prompt
+  //     assembly, so doc-side retrieval then scores sections against the gated
+  //     diff — deliberate compounding (a section only relevant to dropped
+  //     hunks falls out too).
+  let gateTrace: Record<string, unknown> | null = null
+  const keepThreshold = options.diffKeepThreshold
+  const gateEnabled =
+    typeof keepThreshold === 'number' &&
+    Number.isFinite(keepThreshold) &&
+    keepThreshold > 0 &&
+    typeof options.relevanceThreshold === 'number' &&
+    Number.isFinite(options.relevanceThreshold) &&
+    options.relevanceThreshold > 0
+  if (gateEnabled) {
+    const gate: DiffGateResult = gateDiffByRelevance(diff, docs, {
+      sectionThreshold: options.relevanceThreshold as number,
+      keepThreshold: keepThreshold as number,
+    })
+    if (gate.active) {
+      diff = gate.keptDiff
+      gateTrace = {
+        keepThreshold,
+        keptByReason: gate.keptByReason,
+        droppedHunks: gate.droppedHunks,
+        trimmedHunkCount: gate.trimmedHunkCount,
+        contextLinesRemoved: gate.contextLinesRemoved,
+      }
+      if (gate.droppedHunks.length > 0 || gate.trimmedHunkCount > 0) {
+        const droppedFiles = new Set(gate.droppedHunks.map((h) => h.filePath)).size
+        stderr.write(
+          `diff gate: dropped ${gate.droppedHunks.length} unrelated hunk(s) in ${droppedFiles} file(s), ` +
+            `trimmed context on ${gate.trimmedHunkCount} hunk(s)\n`,
+        )
+      }
+    }
+  }
+
   // 5. Synthesise prMetadata (no real PR exists for a local /delfini run)
   //    and assemble the AnalysisInput.
   const prMetadata = await buildPRMetadata(git, repoRoot, baseRef)
@@ -356,7 +420,7 @@ export async function runLocalPrepare(options: RunLocalPrepareOptions = {}): Pro
       // bought nothing — fall through to exit 4, preserving the existing
       // "tiny budget → prompt_too_large" tests.
       if (plan.split && plan.chunks.some((c) => !c.overBudget)) {
-        return emitSplitArtifacts(repoRoot, input, plan, filterResult, stderr)
+        return emitSplitArtifacts(repoRoot, input, plan, filterResult, gateTrace, stderr)
       }
     }
     // Residual exit-4: no usable split. Either the non-doc payload alone (diff +
@@ -372,6 +436,15 @@ export async function runLocalPrepare(options: RunLocalPrepareOptions = {}): Pro
     stdout.write(`${JSON.stringify(payload)}\n`)
     return 4
   }
+  // Token-breakdown observability (docs/ideas/token-diet-symmetric-retrieval.md
+  // §2): one stderr line splitting the assembled prompt's estimate into
+  // docs / diff / template components, so a user staring at a large run can
+  // see WHERE the tokens go without spelunking the trace. Computed from two
+  // auxiliary `buildPrompt` renders (empty docs+diff → template+metadata
+  // baseline; empty docs → baseline+diff) — pure arithmetic on the public
+  // engine surface, and the additive length-based estimator makes the
+  // subtraction exact to ±1 token per component.
+  stderr.write(formatTokenBreakdown(input, loadTemplate(), estimatedTokens))
   // Success-with-drops: ranked-fill dropped at least one section but the
   // assembled prompt fits. Single human-readable stderr header — no per-
   // section enumeration (the trace JSON carries the structured list).
@@ -400,6 +473,13 @@ export async function runLocalPrepare(options: RunLocalPrepareOptions = {}): Pro
       droppedPaths: filterResult.droppedPaths,
       droppedHunks: filterResult.droppedHunks,
     }
+  }
+  // `_diffGateResult` (diff-side relevance gate) — additive metadata sibling,
+  // same absent-key discipline as its neighbours: present ONLY when the gate
+  // actually rewrote the diff (an inactive/stood-down gate leaves no trace key,
+  // never a `{ droppedHunks: [] }` falsely implying it ran and kept all).
+  if (gateTrace !== null) {
+    traceJson._diffGateResult = gateTrace
   }
   if (droppedSections.length > 0) {
     traceJson._rankedFillResult = { droppedSections }
@@ -439,6 +519,7 @@ function emitSplitArtifacts(
   input: AnalysisInput,
   plan: PlanPromptsResult,
   filterResult: FilterDiffResult | null,
+  gateTrace: Record<string, unknown> | null,
   stderr: NodeJS.WritableStream,
 ): number {
   ensureTraceDir(repoRoot)
@@ -452,6 +533,9 @@ function emitSplitArtifacts(
       droppedPaths: filterResult.droppedPaths,
       droppedHunks: filterResult.droppedHunks,
     }
+  }
+  if (gateTrace !== null) {
+    traceJson._diffGateResult = gateTrace
   }
   traceJson._planResult = {
     chunkCount: plan.chunks.length,
@@ -506,6 +590,38 @@ function emitSplitArtifacts(
 function removeTraceFileIfExists(repoRoot: string, filename: string): void {
   const target = path.join(repoRoot, '.delfini-trace', filename)
   if (existsSync(target)) rmSync(target)
+}
+
+// -- Token-breakdown observability -------------------------------------------
+
+/**
+ * Decompose the assembled prompt's token estimate into docs / diff / template
+ * components via two auxiliary renders:
+ *   - `{diff:'', docs:[]}`  → template + PR-metadata baseline
+ *   - `{diff,     docs:[]}` → baseline + diff
+ * `docs = total − (baseline + diff)` then falls out. The estimator is a pure
+ * length heuristic (`length / 3.5`, ceil), so each subtraction is exact to
+ * ±1 token — hence the `≈` in the rendered line. Rendering twice more per run
+ * is string work only; no I/O, no engine API addition.
+ */
+function formatTokenBreakdown(
+  input: AnalysisInput,
+  template: string,
+  totalTokens: number,
+): string {
+  const baseline = estimatePromptTokens(
+    buildPrompt({ diff: '', docs: [], prMetadata: input.prMetadata }, template),
+  )
+  const baselinePlusDiff = estimatePromptTokens(
+    buildPrompt({ diff: input.diff, docs: [], prMetadata: input.prMetadata }, template),
+  )
+  const diffTokens = Math.max(0, baselinePlusDiff - baseline)
+  const docsTokens = Math.max(0, totalTokens - baselinePlusDiff)
+  const k = (n: number): string => `${(n / 1000).toFixed(1)}k`
+  return (
+    `prompt ≈ ${k(totalTokens)} tokens ` +
+    `(docs ≈ ${k(docsTokens)}, diff ≈ ${k(diffTokens)}, template ≈ ${k(baseline)})\n`
+  )
 }
 
 // -- Scope resolution --------------------------------------------------------

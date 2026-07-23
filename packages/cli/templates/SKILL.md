@@ -122,6 +122,8 @@ Branch on non-zero exit codes:
   Do not continue.
 
   Note: retrieval is **on by default** (`--relevance-threshold 5`). Retained doc sections that exceed the prompt budget are ranked-filled (most-relevant-first) rather than hard-failed. The CLI then exits `0` with a `dropped N section(s) — over prompt budget` line on stderr; that path does **not** reach exit `4`. Exit `4` is reserved for the non-doc payload itself being over budget (or, under `--relevance-threshold 0`, an over-budget whole-doc prompt).
+
+  Note: the **diff side is gated by default too** (`--diff-keep-threshold` follows the effective `--relevance-threshold`): hunks not relevant to any retained doc section are dropped before prompt assembly — reported via a `diff gate: dropped N unrelated hunk(s) …` stderr line and a `_diffGateResult` record inside `analysis-input.json`, never silently. In-scope doc edits, brand-new files, and dependency manifests always survive; weakly-linked hunks keep radius-1 context. `--diff-keep-threshold 0` opts out. Successful runs also print a `prompt ≈ Nk tokens (docs ≈ …, diff ≈ …, template ≈ …)` breakdown line — both lines are informational; no action needed.
 - **Any other non-zero exit** → surface the CLI's error output to the user and stop. Do not continue.
 
 ## Dispatch analysis

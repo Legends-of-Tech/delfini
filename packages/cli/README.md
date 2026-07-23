@@ -39,7 +39,7 @@ Scaffold the Skill into a repo (idempotent — safe to re-run).
 - Always creates `.claude/skills/delfini/delfini-config.json` with both `doc_scope` and `ignore_code_scope` fields (empty arrays when prompts are skipped or stdin is non-TTY), giving the team a committed, hand-editable template.
 - `--ignore-code-scope <paths>` — seed `ignore_code_scope` without prompting (mirrors `--scope`).
 
-### `delfini local-prepare [--scope <paths>] [--ignore-code-scope <paths>] [--base <ref>] [--relevance-threshold <N>]`
+### `delfini local-prepare [--scope <paths>] [--ignore-code-scope <paths>] [--base <ref>] [--relevance-threshold <N>] [--diff-keep-threshold <N>]`
 
 Assemble the analysis input for the coding agent to dispatch.
 
@@ -47,6 +47,8 @@ Assemble the analysis input for the coding agent to dispatch.
 - `--ignore-code-scope <paths>` — comma-separated code paths whose changes are ignored for analysis (directories, files, or globs), overriding the persisted `ignore_code_scope` for this run only.
 - `--base <ref>` — diff base ref. Defaults to `git merge-base HEAD origin/main`.
 - `--relevance-threshold <N>` — render only the doc sections scoring at/above `N` against the diff, most-relevant-first up to the prompt budget. **Default `5`** (a measured ~40% prompt-token reduction on doc-heavy runs); pass `0` to embed every in-scope doc whole.
+- `--diff-keep-threshold <N>` — the diff-side symmetric of retrieval: keep only the diff hunks scoring at/above `N` against the retained doc sections (same tier formula). In-scope doc edits, brand-new files, and dependency manifests always survive; weakly-linked kept hunks have leading/trailing context trimmed to one line. Every drop is reported (a `diff gate:` stderr line + a `_diffGateResult` record in the trace). **Defaults to the effective `--relevance-threshold`**, so diff gating is on whenever retrieval is; pass `0` to analyse the full diff.
+- Prints a `prompt ≈ Nk tokens (docs ≈ …, diff ≈ …, template ≈ …)` breakdown line on every successful single-prompt run.
 - Writes `analysis-input.json`, `analysis-prompt.md`, and `schema.json` to `.delfini-trace/`.
 
 ### `delfini local-finalize <findings.json>`

@@ -382,4 +382,59 @@ describe('SingleCallOrchestrator', () => {
     await orchestrator.analyze(overBudgetInput())
     expect(invoke).toHaveBeenCalledTimes(1)
   })
+
+  // --- Diff-side relevance gate (docs/ideas/token-diet-symmetric-retrieval.md)
+
+  // One doc-linked hunk (path overlap with the ## Modules section) + one
+  // lexically-unrelated hunk. The gate (default-on, lockstep with the CLI's
+  // cross-flag default) must drop the unrelated hunk from the dispatched
+  // prompt; `diffKeepThreshold: 0` must restore the pre-gate behaviour.
+  function gateInput(): AnalysisInput {
+    const linked =
+      'diff --git a/src/x.ts b/src/x.ts\n' +
+      '--- a/src/x.ts\n+++ b/src/x.ts\n' +
+      '@@ -1 +1 @@\n-export const moduleFlag = 1\n+export const moduleFlag = 2\n'
+    const unlinked =
+      'diff --git a/src/noise.ts b/src/noise.ts\n' +
+      '--- a/src/noise.ts\n+++ b/src/noise.ts\n' +
+      '@@ -1 +1 @@\n-export const zebraCount = 1\n+export const zebraCount = 2\n'
+    return {
+      diff: linked + unlinked,
+      docs: [
+        {
+          path: 'docs/guide.md',
+          content: '# Guide\n\n## Modules\n\nThe module src/x.ts exposes moduleFlag.\n',
+          frontMatterLineCount: 0,
+        },
+      ],
+      prMetadata: { owner: 'acme', repo: 'widget', prNumber: 3, headSha: 'h', baseSha: 'b', title: 't' },
+    }
+  }
+
+  const emptyFindings: AnalysisResult = { contradictions: [], additions: [], rawConfidence: 1 }
+
+  it('default-on diff gate drops unlinked hunks from the dispatched prompt', async () => {
+    const invoke = vi.fn().mockResolvedValue(emptyFindings)
+    const model = makeFakeModel({ invoke })
+    const orchestrator = new SingleCallOrchestrator(model)
+
+    await orchestrator.analyze(gateInput())
+
+    expect(invoke).toHaveBeenCalledTimes(1)
+    const prompt = invoke.mock.calls[0][0] as string
+    expect(prompt).toContain('src/x.ts')
+    expect(prompt).not.toContain('src/noise.ts')
+  })
+
+  it('diffKeepThreshold: 0 opts out — the full diff is dispatched', async () => {
+    const invoke = vi.fn().mockResolvedValue(emptyFindings)
+    const model = makeFakeModel({ invoke })
+    const orchestrator = new SingleCallOrchestrator(model, { diffKeepThreshold: 0 })
+
+    await orchestrator.analyze(gateInput())
+
+    const prompt = invoke.mock.calls[0][0] as string
+    expect(prompt).toContain('src/x.ts')
+    expect(prompt).toContain('src/noise.ts')
+  })
 })

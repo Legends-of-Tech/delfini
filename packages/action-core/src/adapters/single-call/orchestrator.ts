@@ -7,6 +7,7 @@ import {
   analysisSchema,
   buildPrompt,
   estimatePromptTokens,
+  gateDiffByRelevance,
   mergeAnalysisResults,
   planPrompts,
   validateAndReconcile,
@@ -37,6 +38,15 @@ interface StructuredModel {
 // operators who want a different split point.
 export const ANALYSIS_PROMPT_TOKEN_BUDGET = 150_000
 export const ANALYSIS_RELEVANCE_THRESHOLD = 5
+
+// Per-hunk keep bar for the diff-side relevance gate
+// (docs/ideas/token-diet-symmetric-retrieval.md). DELIBERATELY mirrors the
+// CLI's cross-flag default (`--diff-keep-threshold` follows
+// `--relevance-threshold`, i.e. 5) so both surfaces make identical keep/drop
+// decisions on identical input — same lockstep duplication note as the two
+// constants above. Set `diffKeepThreshold: 0` via the constructor to disable
+// gating for a run.
+export const ANALYSIS_DIFF_KEEP_THRESHOLD = 5
 
 // Resolve the canonical prompt template. drift-engine is pure-logic (no
 // I/O); action-core loads the template here and passes it into
@@ -85,14 +95,20 @@ export class SingleCallOrchestrator implements AnalysisOrchestrator {
   private readonly model: BaseChatModel
   private readonly budget: number
   private readonly threshold: number
+  private readonly diffKeepThreshold: number
 
   constructor(
     model: BaseChatModel = createChatModel(),
-    options: { promptTokenBudget?: number; relevanceThreshold?: number } = {},
+    options: {
+      promptTokenBudget?: number
+      relevanceThreshold?: number
+      diffKeepThreshold?: number
+    } = {},
   ) {
     this.model = model
     this.budget = options.promptTokenBudget ?? ANALYSIS_PROMPT_TOKEN_BUDGET
     this.threshold = options.relevanceThreshold ?? ANALYSIS_RELEVANCE_THRESHOLD
+    this.diffKeepThreshold = options.diffKeepThreshold ?? ANALYSIS_DIFF_KEEP_THRESHOLD
   }
 
   async analyze(input: AnalysisInput): Promise<AnalysisResult> {
@@ -101,10 +117,35 @@ export class SingleCallOrchestrator implements AnalysisOrchestrator {
     }) as StructuredModel
     const warn = (message: string): void => core.warning(message)
 
+    // Diff-side relevance gate FIRST (mirrors the CLI's `local-prepare` step
+    // 4b — docs/ideas/token-diet-symmetric-retrieval.md): drop hunks linked to
+    // no retained doc section, trim context on weakly-linked ones. The gate is
+    // pure and the thresholds are lockstep constants, so both surfaces make
+    // the identical decision on identical input (parity by construction). It
+    // stands down on its own degenerate cases (returns the diff verbatim), so
+    // `effective` is never an empty-diff input. Reconciliation below always
+    // uses the FULL `input.docs` — grounding is gate-independent.
+    const gate = gateDiffByRelevance(input.diff, input.docs, {
+      sectionThreshold: this.threshold,
+      keepThreshold: this.diffKeepThreshold,
+    })
+    const effective: AnalysisInput = gate.active
+      ? { ...input, diff: gate.keptDiff }
+      : input
+    if (gate.active && gate.droppedHunks.length > 0) {
+      const droppedFiles = new Set(gate.droppedHunks.map((h) => h.filePath)).size
+      core.warning(
+        `Delfini diff gate: dropped ${gate.droppedHunks.length} hunk(s) in ${droppedFiles} ` +
+          `file(s) not relevant to any in-scope doc section (kept ${
+            Object.values(gate.keptByReason).reduce((a, b) => a + b, 0)
+          } hunk(s)).`,
+      )
+    }
+
     // Fast path — the whole prompt fits one call. Identical to the pre-multi-
     // prompt behaviour (buildPrompt with no retrieval options → one LLM call →
     // reconcile), so existing single-call runs are unchanged.
-    const wholePrompt = buildPrompt(input, loadTemplate())
+    const wholePrompt = buildPrompt(effective, loadTemplate())
     if (estimatePromptTokens(wholePrompt) <= this.budget) {
       const result = await this.invokeWithRetry(structured, wholePrompt)
       return validateAndReconcile(result, input.docs, warn)
@@ -115,7 +156,7 @@ export class SingleCallOrchestrator implements AnalysisOrchestrator {
     // reconciled results (the same `mergeAnalysisResults` the Skill's
     // `local-finalize` uses). Parity by construction: both surfaces route the
     // diff and dedup findings identically.
-    const plan = planPrompts(input, loadTemplate(), {
+    const plan = planPrompts(effective, loadTemplate(), {
       promptTokenBudget: this.budget,
       relevanceThreshold: this.threshold,
     })

@@ -3,5 +3,8 @@
 # (the hash becomes the dist asset FILENAME) - a CRLF checkout on Windows
 # would hash differently than Linux CI and fail the dist-freshness gate.
 packages/drift-engine/src/prompt.md text eol=lf
+# The canonical prompt snapshot is byte-compared against buildPrompt output
+# (NFR44 release-gate A) - same CRLF hazard as prompt.md itself.
+packages/drift-engine/__tests__/fixtures/canonical-prompt.snapshot.md text eol=lf
 # The committed action bundle is byte-compared against a fresh Linux build.
 apps/action/dist/** text eol=lf
