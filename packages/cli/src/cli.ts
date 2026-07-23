@@ -184,6 +184,25 @@ export async function main(argv: string[]): Promise<void> {
       DEFAULT_RELEVANCE_THRESHOLD,
     )
     .option(
+      '--diff-keep-threshold <n>',
+      'Keep only diff HUNKS scoring at/above N against the retained doc sections (same tier formula as --relevance-threshold; in-scope doc edits, new files, and dependency manifests always survive). Weakly-linked kept hunks have leading/trailing context trimmed; every drop is reported on stderr and in the trace. Defaults to the effective --relevance-threshold, so diff-side gating is ON whenever retrieval is. Pass 0 to disable and analyse the full diff.',
+      (value) => {
+        // Same strict integer-only contract as --relevance-threshold.
+        if (!/^\d+$/.test(value)) {
+          throw new Error('--diff-keep-threshold must be a non-negative integer')
+        }
+        const parsed = Number.parseInt(value, 10)
+        if (!Number.isFinite(parsed)) {
+          throw new Error('--diff-keep-threshold must be a non-negative integer')
+        }
+        return parsed
+      },
+      // No commander default: "follow the effective --relevance-threshold" is
+      // a cross-flag default commander cannot express, so the action handler
+      // resolves it below. `runLocalPrepare` stays a pure pass-through either
+      // way (NFR49(b) — the default-ON lives at this flag layer only).
+    )
+    .option(
       '--enable-diff-prefilter',
       'Drop lockfile/generated/vendored/fixture paths + pure-whitespace/import-only hunks from the diff before prompt assembly (Story P3.7.2 / FR151). Default: off — assembled prompt is byte-identical to the no-flag baseline.',
     )
@@ -194,6 +213,7 @@ export async function main(argv: string[]): Promise<void> {
         base?: string
         diffSource?: string
         relevanceThreshold?: number
+        diffKeepThreshold?: number
         enableDiffPrefilter?: boolean
       }) => {
         const exitCode = await runLocalPrepare({
@@ -202,6 +222,10 @@ export async function main(argv: string[]): Promise<void> {
           base: opts.base,
           diffSource: opts.diffSource as 'local' | 'committed' | 'both' | undefined,
           relevanceThreshold: opts.relevanceThreshold,
+          // Cross-flag default: gate at the retrieval threshold unless the
+          // user pinned it (0 disables). Keeps the two knobs moving together
+          // — `--relevance-threshold 0` turns retrieval AND gating off.
+          diffKeepThreshold: opts.diffKeepThreshold ?? opts.relevanceThreshold,
           enableDiffPreFilter: opts.enableDiffPrefilter,
         })
         process.exitCode = exitCode

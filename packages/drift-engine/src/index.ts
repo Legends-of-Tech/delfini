@@ -25,7 +25,7 @@
 // they live inside the same workspace package.
 
 export { buildPrompt, buildPromptWithDrops } from './prompt-builder.js'
-export { validateAndReconcile } from './reconcile.js'
+export { validateAndReconcile, mergeAnalysisResults } from './reconcile.js'
 export { estimatePromptTokens } from './prompt-budget.js'
 export { analysisSchema } from './schema.js'
 
@@ -54,6 +54,15 @@ export { filterDiff } from './diff-filter.js'
 // header and to write `_rankedFillResult` into `.delfini-trace/`.
 export { rankedFillSections } from './relevance.js'
 
+// Multi-prompt planner (docs/ideas/multi-prompt-diff-analysis.md). Splits an
+// over-budget analysis across several budget-sized prompts so an arbitrarily
+// large code diff can still be analysed instead of hard-failing. The default
+// path is untouched: `planPrompts` returns a single chunk byte-identical to
+// `buildPrompt` whenever the prompt already fits, so the NFR44 snapshot gate is
+// unaffected. Exported because the gate lives at the consumers (CLI Skill loop /
+// Action orchestrator), which loop over the chunks, dispatch each, and merge.
+export { planPrompts } from './prompt-planner.js'
+
 export type {
   AnalysisInput,
   AnalysisResult,
@@ -80,3 +89,31 @@ export type {
   RankedFillCandidate,
   RankedFillResult,
 } from './relevance.js'
+
+// Always-on diff-side relevance gate
+// (docs/ideas/token-diet-symmetric-retrieval.md). Symmetric completion of
+// NFR49's default-on doc retrieval: hunks linked to no retained section are
+// dropped (reported, never silent) and weakly-linked hunks lose excess
+// context — BEFORE prompt assembly, at any prompt size, not just the
+// over-budget planner path. Exported because — like `filterDiff` and
+// `planPrompts` — the gate lives at the consumer call-sites (CLI
+// `runLocalPrepare`, Action `SingleCallOrchestrator`); the default
+// `buildPrompt` path never calls it, so the NFR44 snapshot gate is untouched.
+export { gateDiffByRelevance } from './diff-gate.js'
+
+export type {
+  PlanPromptsOptions,
+  PlanPromptsResult,
+  PromptChunk,
+  OversizedSection,
+} from './prompt-planner.js'
+
+export type { DiffHunk } from './diff-hunks.js'
+
+export type {
+  DiffGateOptions,
+  DiffGateResult,
+  DroppedGateHunk,
+  GateInactiveReason,
+  GateKeepReason,
+} from './diff-gate.js'

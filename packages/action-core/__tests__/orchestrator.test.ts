@@ -304,4 +304,137 @@ describe('SingleCallOrchestrator', () => {
     await expect(orchestrator.analyze(sampleInput)).rejects.toThrow('Failed to parse')
     expect(invoke).toHaveBeenCalledTimes(2)
   })
+
+  // --- Multi-prompt fallback (over-budget diff) -----------------------------
+
+  const QUOTE = 'The moduleHandler in src/modules dispatches 100 events per tick.'
+
+  // A diff big enough that the whole prompt exceeds a 9k budget but each routed
+  // chunk fits — the 30 hunks all reference the ## Modules section's identifiers.
+  function overBudgetInput(): AnalysisInput {
+    let diff = ''
+    for (let i = 0; i < 30; i++) {
+      diff +=
+        `diff --git a/src/modules/mod-${i}.ts b/src/modules/mod-${i}.ts\n` +
+        `--- a/src/modules/mod-${i}.ts\n+++ b/src/modules/mod-${i}.ts\n` +
+        `@@ -1,2 +1,2 @@\n` +
+        `-export const moduleHandler = registerModuleHandler(${i})\n` +
+        `+export const moduleHandler = registerModuleHandler(${i} + 1)\n` +
+        ` // moduleHandler under src/modules\n`
+    }
+    return {
+      diff,
+      docs: [
+        {
+          path: 'docs/guide.md',
+          content: `# Reference\n\n## Modules\n\n${QUOTE}\nEvery src/modules file registers a moduleHandler.`,
+          frontMatterLineCount: 0,
+        },
+      ],
+      prMetadata: { owner: 'acme', repo: 'widget', prNumber: 9, headSha: 'h', baseSha: 'b', title: 't' },
+    }
+  }
+
+  it('over budget → splits via planPrompts, dispatches each chunk, merges + dedups', async () => {
+    const canned: AnalysisResult = {
+      contradictions: [
+        {
+          targetDocPath: 'docs/guide.md',
+          targetSection: '## Modules',
+          targetLineStart: 5,
+          targetLineEnd: 5,
+          whatChanged: 'moduleHandler tick budget changed',
+          whatContradicts: 'doc states a stale value',
+          proposedReplacement: 'The moduleHandler in src/modules dispatches 200 events per tick.',
+          severity: 'High',
+          confidence: 4,
+          quotedDocText: QUOTE,
+        },
+      ],
+      additions: [],
+      rawConfidence: 0.7,
+    }
+    // Every chunk returns the SAME finding (the shared section was rendered into
+    // each chunk) — merge must collapse it to one.
+    const invoke = vi.fn().mockResolvedValue(canned)
+    const model = makeFakeModel({ invoke })
+    const orchestrator = new SingleCallOrchestrator(model, { promptTokenBudget: 9000 })
+
+    const result = await orchestrator.analyze(overBudgetInput())
+
+    // Split happened → more than one LLM call…
+    expect(invoke.mock.calls.length).toBeGreaterThanOrEqual(2)
+    // …but the duplicate finding is deduped down to one.
+    expect(result.contradictions).toHaveLength(1)
+    expect(result.contradictions[0].proposedReplacement).toContain('200 events')
+  })
+
+  it('over budget but planner cannot split (threshold 0) → one whole-prompt call', async () => {
+    const invoke = vi
+      .fn()
+      .mockResolvedValue({ contradictions: [], additions: [], rawConfidence: 0.1 })
+    const model = makeFakeModel({ invoke })
+    const orchestrator = new SingleCallOrchestrator(model, {
+      promptTokenBudget: 1,
+      relevanceThreshold: 0,
+    })
+
+    await orchestrator.analyze(overBudgetInput())
+    expect(invoke).toHaveBeenCalledTimes(1)
+  })
+
+  // --- Diff-side relevance gate (docs/ideas/token-diet-symmetric-retrieval.md)
+
+  // One doc-linked hunk (path overlap with the ## Modules section) + one
+  // lexically-unrelated hunk. The gate (default-on, lockstep with the CLI's
+  // cross-flag default) must drop the unrelated hunk from the dispatched
+  // prompt; `diffKeepThreshold: 0` must restore the pre-gate behaviour.
+  function gateInput(): AnalysisInput {
+    const linked =
+      'diff --git a/src/x.ts b/src/x.ts\n' +
+      '--- a/src/x.ts\n+++ b/src/x.ts\n' +
+      '@@ -1 +1 @@\n-export const moduleFlag = 1\n+export const moduleFlag = 2\n'
+    const unlinked =
+      'diff --git a/src/noise.ts b/src/noise.ts\n' +
+      '--- a/src/noise.ts\n+++ b/src/noise.ts\n' +
+      '@@ -1 +1 @@\n-export const zebraCount = 1\n+export const zebraCount = 2\n'
+    return {
+      diff: linked + unlinked,
+      docs: [
+        {
+          path: 'docs/guide.md',
+          content: '# Guide\n\n## Modules\n\nThe module src/x.ts exposes moduleFlag.\n',
+          frontMatterLineCount: 0,
+        },
+      ],
+      prMetadata: { owner: 'acme', repo: 'widget', prNumber: 3, headSha: 'h', baseSha: 'b', title: 't' },
+    }
+  }
+
+  const emptyFindings: AnalysisResult = { contradictions: [], additions: [], rawConfidence: 1 }
+
+  it('default-on diff gate drops unlinked hunks from the dispatched prompt', async () => {
+    const invoke = vi.fn().mockResolvedValue(emptyFindings)
+    const model = makeFakeModel({ invoke })
+    const orchestrator = new SingleCallOrchestrator(model)
+
+    await orchestrator.analyze(gateInput())
+
+    expect(invoke).toHaveBeenCalledTimes(1)
+    const prompt = invoke.mock.calls[0][0] as string
+    expect(prompt).toContain('src/x.ts')
+    expect(prompt).not.toContain('src/noise.ts')
+  })
+
+  it('diffKeepThreshold: 0 opts out — the full diff is dispatched', async () => {
+    const invoke = vi.fn().mockResolvedValue(emptyFindings)
+    const model = makeFakeModel({ invoke })
+    const orchestrator = new SingleCallOrchestrator(model, { diffKeepThreshold: 0 })
+
+    await orchestrator.analyze(gateInput())
+
+    const prompt = invoke.mock.calls[0][0] as string
+    expect(prompt).toContain('src/x.ts')
+    expect(prompt).toContain('src/noise.ts')
+  })
 })

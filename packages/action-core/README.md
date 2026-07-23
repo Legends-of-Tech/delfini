@@ -7,7 +7,7 @@ The shared pipeline core of the [Delfini](https://github.com/Legends-of-Tech/del
 - **Doc reader** — fetches the in-scope docs from the repo via a single git-trees call + the shared doc-scope matcher (glob dialect from [`@delfini/drift-engine`](https://www.npmjs.com/package/@delfini/drift-engine)), with front-matter exclusion (`delfini: ignore`).
 - **Change classification** — decides whether a PR's changes are worth analyzing or can be skipped.
 - **Analysis assembly** — builds the unified diff and the analysis input (with an optional deterministic diff pre-filter that drops noise like lockfiles).
-- **Orchestrator** — the single-call LLM adapter over the engine's `buildPrompt` / `validateAndReconcile`, with the analysis prompt template bundled in.
+- **Orchestrator** — the LLM adapter over the engine's `buildPrompt` / `validateAndReconcile`; for over-budget diffs it splits the analysis via `planPrompts` and merges per-chunk results with `mergeAnalysisResults` — the same drift-engine primitives the Skill uses, so both surfaces agree on large diffs.
 - **Shared GitHub client** — PR context, changed-file listing, doc reads, check status, and an idempotent PR-comment writer.
 - **Input reader** — parses the Action's `doc_scope` input (with the code-side `docs/` default) into the engine's doc-scope representation.
 

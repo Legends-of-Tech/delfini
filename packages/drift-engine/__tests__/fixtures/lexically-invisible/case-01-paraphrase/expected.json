@@ -1,0 +1,14 @@
+{
+  "gateAtDefaults": {
+    "sectionThreshold": 5,
+    "keepThreshold": 5,
+    "keptFilePaths": ["src/payments/api.ts"],
+    "droppedFilePaths": ["src/config/timeouts.ts"]
+  },
+  "groundTruth": {
+    "targetDocPath": "docs/policies.md",
+    "targetSection": "## Session lifetime",
+    "quotedDocText": "Sessions expire after one hour of inactivity.",
+    "description": "IDLE_LIMIT_MS 3600_000 -> 7200_000 doubles the idle timeout to two hours, contradicting 'one hour of inactivity' — but the hunk shares zero identifiers or paths with the section, so lexical routing cannot see the link. This finding is LOST when the diff gate is active."
+  }
+}

@@ -93,7 +93,7 @@ The lightest way to try Delfini. No account, no API key, no GitHub App — it ru
 npx @delfini/cli install .
 ```
 
-That scaffolds `.claude/skills/delfini/SKILL.md` into your repo and asks one question — *"Auto-invoke `/delfini` when you open a PR?"*. From then on, `/delfini` in Claude Code analyzes your working tree against your docs and offers to apply the fixes:
+That scaffolds `.claude/skills/delfini/SKILL.md` into your repo and asks two questions — *"Which docs should Delfini analyse?"* and *"Which code paths should Delfini ignore?"* — then creates a committed `delfini-config.json` template with both fields. From then on, `/delfini` in Claude Code analyzes your working tree against your docs and offers to apply the fixes:
 
 ```
 Apply all (a) / Pick subset (s) / Skip (n)?

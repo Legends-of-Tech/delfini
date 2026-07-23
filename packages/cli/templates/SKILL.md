@@ -111,6 +111,8 @@ Run `delfini local-prepare --diff-source <resolved>` (the value resolved in "Res
 - `.delfini-trace/analysis-prompt.md`
 - `.delfini-trace/schema.json`
 
+**Check for a split run first.** If `.delfini-trace/chunks.json` exists, the diff was too large for one prompt and `local-prepare` split the analysis into several budget-sized prompts. In that case `analysis-prompt.md` is absent and you must follow "Multi-prompt mode" below instead of the single "Dispatch analysis" / "Run finalize" steps. When `chunks.json` is absent, proceed with the single-prompt steps as written.
+
 Branch on non-zero exit codes:
 
 - **Exit `2` (no doc-scope set AND no `--scope` provided)** → fall back to the "Load config" first-run prompt, write `delfini-config.json`, then re-run `delfini local-prepare --diff-source <resolved>`.
@@ -120,6 +122,8 @@ Branch on non-zero exit codes:
   Do not continue.
 
   Note: retrieval is **on by default** (`--relevance-threshold 5`). Retained doc sections that exceed the prompt budget are ranked-filled (most-relevant-first) rather than hard-failed. The CLI then exits `0` with a `dropped N section(s) — over prompt budget` line on stderr; that path does **not** reach exit `4`. Exit `4` is reserved for the non-doc payload itself being over budget (or, under `--relevance-threshold 0`, an over-budget whole-doc prompt).
+
+  Note: the **diff side is gated by default too** (`--diff-keep-threshold` follows the effective `--relevance-threshold`): hunks not relevant to any retained doc section are dropped before prompt assembly — reported via a `diff gate: dropped N unrelated hunk(s) …` stderr line and a `_diffGateResult` record inside `analysis-input.json`, never silently. In-scope doc edits, brand-new files, and dependency manifests always survive; weakly-linked hunks keep radius-1 context. `--diff-keep-threshold 0` opts out. Successful runs also print a `prompt ≈ Nk tokens (docs ≈ …, diff ≈ …, template ≈ …)` breakdown line — both lines are informational; no action needed.
 - **Any other non-zero exit** → surface the CLI's error output to the user and stop. Do not continue.
 
 ## Dispatch analysis
@@ -143,6 +147,26 @@ After the analysis subagent completes, run `delfini local-finalize .delfini-trac
 4. If the second attempt also exits `3`: copy the failing output to `.delfini-trace/findings-attempt-2.json`, surface both raw outputs (`findings-attempt-1.json` and `findings-attempt-2.json`) plus the schema-validation error to the user, and stop. **No third try.**
 
 Rationale: if a frontier model cannot satisfy the schema twice with the schema in hand, the prompt or the schema is broken. Debugging belongs upstream — do not paper over it with a third retry.
+
+## Multi-prompt mode
+
+This section REPLACES "Dispatch analysis", "Retry on schema-validation failure", and "Run finalize" when `.delfini-trace/chunks.json` is present (a large-diff split run). Everything else — "Surface the report", "Apply UX" — is identical.
+
+Read `.delfini-trace/chunks.json`. It has the shape:
+
+```json
+{"version":1,"chunkCount":<N>,"prompts":["analysis-prompt-0.md", ...],"oversizedSections":[...],"droppedHunkFilePaths":[...]}
+```
+
+**Dispatch each chunk.** For each entry in `prompts` (index `k` = 0…N-1), dispatch a subagent via the host agent's `Agent` tool with the SAME parameters as single-prompt "Dispatch analysis" (`model` `'sonnet'` or a `--model` override, `subagent_type` `'general-purpose'`, `description` `'Delfini drift analysis'`), except:
+
+- `prompt`: the full contents of `.delfini-trace/<prompts[k]>`, followed by the full contents of `.delfini-trace/schema.json`, followed by the literal instruction: `write your JSON findings to .delfini-trace/findings-<k>.json` (use the chunk's own index `k`).
+
+Each subagent's only required side effect is writing its own `.delfini-trace/findings-<k>.json`. Dispatch all chunks before finalizing. If `oversizedSections` is non-empty, one or more chunks exceeded budget (a single doc section attracted more diff than fits one prompt) — dispatch them anyway; they are still within the model's context limit.
+
+**Finalize the batch.** Run `delfini local-finalize .delfini-trace/` (pass the trace **directory**, not a single findings file). It reconciles every `findings-<k>.json` against the full docs and merges them into one `.delfini-trace/report.md`. Exit codes match single mode: `0` (no findings → tell the user `No drift detected.` and stop), `1` (findings → continue to "Surface the report"), any other non-zero → surface the error and stop.
+
+**Per-chunk retry on schema failure.** On exit `3`, `local-finalize` prints a JSON payload of the shape `{"error":"schema_validation","failedChunks":[{"chunk":<k>,"issues":[...]}]}`. Re-dispatch ONLY the failed chunks: for each `failedChunks[].chunk` value `k`, copy `findings-<k>.json` to `findings-<k>-attempt-1.json`, then dispatch a second subagent for `prompts[k]` with the chunk's schema-validation error appended plus `the previous attempt failed schema validation with the error above — fix and return valid JSON`, overwriting `findings-<k>.json`. Re-run `delfini local-finalize .delfini-trace/`. If the same chunk fails a second time, preserve `findings-<k>-attempt-2.json`, surface both attempts plus the error to the user, and stop. **No third try per chunk** (same rationale as single mode).
 
 ## Run finalize
 
